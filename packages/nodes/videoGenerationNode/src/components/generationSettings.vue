@@ -26,7 +26,7 @@
           </el-select>
         </div>
       </div>
-      <div class="sectionLabel">通用比例</div>
+      <div class="sectionLabel">画面比例</div>
       <div class="ratioOptions" role="group" aria-label="视频比例">
         <el-button v-for="item in ratios" :key="item" class="ratioButton" :disabled="disabled" :aria-label="`比例 ${item}`" :aria-pressed="ratio === item" @click="ratio = item">
           <span class="ratioContent">
@@ -67,12 +67,20 @@ const mappings = computed(() => props.model?.durationResolutionMap ?? []);
 const durations = computed(() => [...new Set(mappings.value.flatMap(item => item.duration))].sort((a, b) => a - b));
 const resolutions = computed(() => resolutionsFor(duration.value));
 
+function resolutionRank(value: string) {
+  if (/^4k$/i.test(value)) return 2160;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : Number.POSITIVE_INFINITY;
+}
+
 function resolutionsFor(value: number | undefined) {
-  return [...new Set(mappings.value.filter(item => value !== undefined && item.duration.includes(value)).flatMap(item => item.resolution))];
+  return [...new Set(mappings.value.filter(item => value !== undefined && item.duration.includes(value)).flatMap(item => item.resolution))]
+    .sort((left, right) => resolutionRank(left) - resolutionRank(right));
 }
 
 function ratioStyle(value: string) {
-  const [width = 1, height = 1] = value.split(":").map(Number);
+  const [width = Number.NaN, height = Number.NaN] = value.split(":").map(Number);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return { width: "16px", height: "16px" };
   return { width: `${16 * Math.min(width / height, 1)}px`, height: `${16 * Math.min(height / width, 1)}px` };
 }
 </script>
@@ -112,7 +120,7 @@ function ratioStyle(value: string) {
 
   .ratioOptions {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(52px, 1fr));
     gap: 8px;
 
     .ratioButton {

@@ -13,9 +13,13 @@
         </button>
       </div>
       <nav class="sidebarNav" aria-label="首页导航">
-        <button v-for="section in homeSections" :key="section.id" class="sidebarItem" :class="{ active: activeSection === section.id }" type="button" :aria-current="activeSection === section.id ? 'location' : undefined" :aria-label="translate(section.label)" :title="translate(section.label)" @click="scrollToSection(section.id)">
+        <button v-for="section in homeSections" :key="section.id" class="sidebarItem" :class="{ active: !onlineImageVisible && activeSection === section.id }" type="button" :aria-current="!onlineImageVisible && activeSection === section.id ? 'location' : undefined" :aria-label="translate(section.label)" :title="translate(section.label)" @click="scrollToSection(section.id)">
           <component :is="section.icon" :size="18" aria-hidden="true" />
           <span class="sidebarText">{{ translate(section.label) }}</span>
+        </button>
+        <button class="sidebarItem" :class="{ active: onlineImageVisible }" type="button" aria-label="在线生图" title="在线生图" :aria-current="onlineImageVisible ? 'page' : undefined" @click="openOnlineImage">
+          <icon-photo :size="18" aria-hidden="true" />
+          <span class="sidebarText">在线生图</span>
         </button>
         <hr class="sidebarDivider" />
         <button class="sidebarItem" :class="{ active: assetsVisible }" type="button" aria-label="素材库" title="素材库" aria-haspopup="dialog" :aria-expanded="assetsVisible" @click="assetsVisible = true">
@@ -44,7 +48,8 @@
         </a>
       </div>
     </aside>
-    <el-scrollbar ref="pageScroll" class="pageScroll" @scroll="updateActiveSection">
+    <onlineImage v-if="onlineImageMounted" v-show="onlineImageVisible" class="onlineImagePage" :active="onlineImageVisible" @openSettings="settingsVisible = true" />
+    <el-scrollbar v-show="!onlineImageVisible" ref="pageScroll" class="pageScroll" @scroll="updateActiveSection">
       <div class="pageBody">
         <el-main class="pageContent">
           <section class="creationPanel" data-home-section="home" aria-label="创建项目">
@@ -133,7 +138,7 @@ import {
   IconQrcode, IconDeviceDesktop, IconHome, IconCompass,
   IconArrowUp, IconPlus, IconLoader2,
   IconFolder, IconEdit,
-  IconTrash, IconPaperclip,
+  IconTrash, IconPaperclip, IconPhoto,
 } from "@tabler/icons-vue";
 import modelPopover from "@/components/modelPopover.vue";
 import attachmentList from "@/components/agent/attachmentList.vue";
@@ -149,11 +154,14 @@ import settings from "@/components/settings/index.vue";
 import assetLibraryDialog from "./assetLibraryDialog.vue";
 import bg from "./bg.vue";
 import explore from "./explore.vue";
+import onlineImage from "./onlineImage.vue";
 import projectCover from "./projectCover.vue";
 import workspacePicker from "./workspacePicker.vue";
 
 const settingsVisible = ref(false);
 const assetsVisible = ref(false);
+const onlineImageVisible = ref(false);
+const onlineImageMounted = ref(false);
 const mobileConnectVisible = ref(false);
 const sidebarCollapsed = ref(false);
 const pageScroll = ref<ScrollbarInstance>();
@@ -256,7 +264,14 @@ const selectedModel = ref("");
 const reasoningEffort = ref("");
 const sortedProjects = computed(() => [...projectList.value].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt));
 
-function scrollToSection(section: string) {
+function openOnlineImage() {
+  onlineImageMounted.value = true;
+  onlineImageVisible.value = true;
+}
+
+async function scrollToSection(section: string) {
+  onlineImageVisible.value = false;
+  await nextTick();
   const wrap = pageScroll.value?.wrapRef;
   const target = wrap?.querySelector<HTMLElement>(`[data-home-section="${section}"]`);
   if (!wrap || !target) return;
@@ -646,11 +661,16 @@ async function createProject(fromPrompt = true) {
     }
   }
 
-  .pageScroll {
+  .onlineImagePage, .pageScroll {
     position: relative;
     flex: 1;
     min-width: 0;
     height: 100%;
+  }
+
+  .onlineImagePage { overflow: auto; overscroll-behavior: contain; }
+
+  .pageScroll {
 
     :deep(.el-scrollbar__view) { min-height: 100%; }
 

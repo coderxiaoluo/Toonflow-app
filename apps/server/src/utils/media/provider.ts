@@ -6,6 +6,10 @@ import { dirname, join } from "node:path";
 import { createContext, SourceTextModule } from "node:vm";
 import type { AudioConvertOptions, Provider, ProviderTools } from "@toonflow/providers";
 import tfRouter from "@toonflow/providers/media/tfRouter";
+import { generateOpenaiImage } from "@toonflow/providers/media/openaiImages";
+import { openaiImagesProtocol } from "@toonflow/providers/media/openaiImagesCatalog";
+import { generateVolcengineVideo, getVolcengineBalance, queryVolcengineBalance } from "@toonflow/providers/media/volcengineArk";
+import { volcengineArkProtocol } from "@toonflow/providers/media/volcengineArkCatalog";
 import { parse, parseExpression } from "@babel/parser";
 import { z } from "zod";
 import conf from "@/utils/conf";
@@ -196,6 +200,9 @@ function parseProvider(source: string) {
   const version = value("version");
   const readme = value("readme");
   const modelsUrl = value("modelsUrl");
+  const protocol = value("protocol");
+  const declaredProtocols = value("protocols");
+  const protocols = [protocol, ...(Array.isArray(declaredProtocols) ? declaredProtocols : [])].filter((item): item is string => typeof item === "string");
   if (!providerIdSchema.safeParse(id).success) invalid("供应商 ID 必须为小驼峰文件名");
   if (typeof label !== "string" || !label.trim() || label.length > 200) invalid("供应商名称无效");
   if (icon !== undefined && typeof icon !== "string") invalid("供应商图标必须为字符串");
@@ -210,7 +217,7 @@ function parseProvider(source: string) {
   const rules = z.array(z.record(z.string(), z.json())).safeParse(value("rules") ?? []);
   if (!rules.success) invalid("供应商 rules 必须为表单配置对象数组");
   return { object, modelProperty: entries.get("models"), id: id as string, label, icon, version: version?.trim(), readme, modelsUrl: modelsUrl as string | undefined, rules: rules.data, models: models.data,
-    supportsPrice: entries.has("getPrice") || id === tfRouter.id, supportsBalance: entries.has("getBalance") || id === tfRouter.id };
+    supportsPrice: entries.has("getPrice") || id === tfRouter.id, supportsBalance: entries.has("getBalance") || id === tfRouter.id || protocols.includes(volcengineArkProtocol) };
 }
 
 function metadata(fileName: string, source: string) {
@@ -219,6 +226,18 @@ function metadata(fileName: string, source: string) {
   // ACT: 兼容旧 TF-Router 文件，缺少列表地址时使用内置定义。
   return { fileName, id, label, icon, version, readme, modelsUrl: modelsUrl ?? (id === tfRouter.id ? tfRouter.modelsUrl : undefined), rules, models,
     supportsPrice, supportsBalance, revision: createHash("sha256").update(source).digest("hex"), loadError: "" };
+}
+
+export async function queryProtocolBalance(protocol: string, apiUrl: string, apiKey: string) {
+  if (protocol !== volcengineArkProtocol) invalid("不支持的媒体 API 协议");
+  try {
+    return await queryVolcengineBalance({ apiUrl, apiKey, signal: AbortSignal.timeout(20000) });
+  } catch (error) {
+    const status = error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
+    if (status >= 400 && status < 600) throw error;
+    if (error instanceof Error && error.name === "AbortError") invalid("连接超时，请稍后重试", 504);
+    invalid("无法连接接口，请检查 API 地址", 502);
+  }
 }
 
 export function validateMediaProviderSource(source: string) {
@@ -403,6 +422,13 @@ export async function loadMediaProviderSource(source: string, config: Record<str
     definition.getPrice ??= tfRouter.getPrice;
     definition.getBalance ??= tfRouter.getBalance;
   }
+  const listed = (definition as { protocols?: unknown }).protocols;
+  const protocols = [definition.protocol, ...(Array.isArray(listed) ? listed : [])];
+  if (protocols.includes(volcengineArkProtocol)) {
+    definition.generateVideo ??= generateVolcengineVideo;
+    definition.getBalance ??= getVolcengineBalance;
+  }
+  if (protocols.includes(openaiImagesProtocol)) definition.generateImage ??= generateOpenaiImage;
   const rules = Array.isArray(definition.rules) ? definition.rules : [];
   const providerConfig = { ...Object.fromEntries(rules.map(rule => [rule.field, rule.value])), ...structuredClone(config) };
   const provider = {

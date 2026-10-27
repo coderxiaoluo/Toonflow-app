@@ -21,6 +21,10 @@ interface ProviderModel {
   audio?: "optional" | boolean;
   imageSizes?: string[];
   imageRatios?: string[];
+  /** 视频画幅。未声明时界面使用通用比例。adaptive 表示由接口自选。 */
+  videoRatios?: string[];
+  defaultResolution?: string;
+  defaultDuration?: number;
   durationResolutionMap?: { duration: number[]; resolution: string[] }[];
   voices?: { title: string; voice: string }[];
 }
@@ -206,7 +210,7 @@ interface ProviderDefinition<TRules extends readonly ProviderFormRule[] = readon
    * 提供此字段后可手动获取；TF-Router 手动获取图片、视频、音频，并在有 key 的程序启动时自动更新。
    */
   modelsUrl?: string;
-  protocol?: "openai-completions" | "openai-responses" | "anthropic-messages";
+  protocol?: "openai-completions" | "openai-responses" | "anthropic-messages" | "volcengine-ark" | "openai-images";
   /** 厂商说明的 Markdown 内容。 */
   readme?: string;
   rules: TRules;

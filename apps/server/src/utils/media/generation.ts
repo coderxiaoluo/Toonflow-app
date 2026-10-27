@@ -35,6 +35,9 @@ export async function listMediaModels(): Promise<MediaModel[]> {
   return installedProviders.flatMap(provider => provider.models.flatMap(model => {
     if (model.type !== "image" && model.type !== "video" && model.type !== "audio") return [];
     const builtIn = (mediaProviders as readonly Provider[]).find(item => item.id === provider.id)?.models.find(item => item.id === model.id);
+    const videoRatios = model.type === "video" ? imageOptions(model.videoRatios, /^(?:adaptive|[1-9]\d{0,3}:[1-9]\d{0,3})$/) : undefined;
+    const defaultResolution = model.type === "video" && typeof model.defaultResolution === "string" && model.defaultResolution.trim() && model.defaultResolution.length <= 32 ? model.defaultResolution.trim() : undefined;
+    const defaultDuration = model.type === "video" && typeof model.defaultDuration === "number" && Number.isInteger(model.defaultDuration) && model.defaultDuration > 0 ? model.defaultDuration : undefined;
     return [{
       providerId: provider.id, providerLabel: provider.label, modelId: model.id, label: model.label, type: model.type,
       supportsPrice: "supportsPrice" in provider && provider.supportsPrice === true,
@@ -44,6 +47,9 @@ export async function listMediaModels(): Promise<MediaModel[]> {
         imageSizes: imageOptions(Array.isArray(model.imageSizes) ? model.imageSizes : builtIn?.imageSizes, /^[^\u0000-\u001f\u007f]+$/),
         imageRatios: imageOptions(Array.isArray(model.imageRatios) ? model.imageRatios : builtIn?.imageRatios, /^[1-9]\d{0,3}:[1-9]\d{0,3}$/),
       } : {}),
+      ...(videoRatios?.length ? { videoRatios } : {}),
+      ...(defaultResolution ? { defaultResolution } : {}),
+      ...(defaultDuration ? { defaultDuration } : {}),
     } as MediaModel];
   }));
 }

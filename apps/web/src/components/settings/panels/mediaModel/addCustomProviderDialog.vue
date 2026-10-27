@@ -57,6 +57,42 @@
               </template>
             </el-segmented>
           </el-form-item>
+        </el-form>
+        <el-form v-if="activeTab === 'form'" ref="protocolFormRef" class="protocolForm" :model="protocolForm" :rules="protocolRules" labelPosition="top" :disabled="saving" @submit.prevent>
+          <div class="formGrid">
+            <el-form-item label="Provider ID" prop="id"><el-input v-model="protocolForm.id" :placeholder="protocolForm.protocol === openaiImagesProtocol ? '例如 myImage' : '例如 myVideo'" /></el-form-item>
+            <el-form-item label="显示名称" prop="label"><el-input v-model="protocolForm.label" placeholder="供应商的显示名称" /></el-form-item>
+            <el-form-item label="API 地址" prop="apiUrl"><el-input v-model="protocolForm.apiUrl" dir="ltr" :placeholder="protocolForm.protocol === openaiImagesProtocol ? 'https://image.example.com' : 'https://api.example.com'" /></el-form-item>
+            <el-form-item label="API 协议">
+              <el-select v-model="protocolForm.protocol" aria-label="API 协议">
+                <el-option label="火山方舟视频" :value="volcengineArkProtocol" />
+                <el-option label="OpenAI 图像" :value="openaiImagesProtocol" />
+              </el-select>
+            </el-form-item>
+          </div>
+          <el-form-item label="API 密钥" prop="apiKey">
+            <el-input v-model="protocolForm.apiKey" type="password" dir="ltr" showPassword autocomplete="off" placeholder="sk-…，可带或不带前缀" />
+          </el-form-item>
+          <div v-if="protocolForm.protocol === volcengineArkProtocol" class="balanceRow">
+            <el-button :icon="IconWallet" :loading="queryingBalance" @click="queryBalance">查询账户余额</el-button>
+            <el-text v-if="balanceText" :type="balanceError ? 'danger' : 'info'" size="small">{{ balanceText }}</el-text>
+          </div>
+          <el-text class="fieldHint" type="info" size="small">{{ protocolHint }}</el-text>
+          <div class="modelHeader">
+            <el-text tag="strong">模型列表</el-text>
+            <el-button @click="restoreRecommendedModels">恢复推荐模型</el-button>
+          </div>
+          <div class="modelList">
+            <div v-for="item in protocolModels" :key="item.key" class="modelRow">
+              <el-input v-model="item.id" :readonly="item.preset" placeholder="模型 ID" aria-label="模型 ID" />
+              <el-input v-model="item.label" placeholder="显示名称" aria-label="模型显示名称" />
+              <el-button text type="danger" :icon="IconTrash" aria-label="删除模型" @click="protocolModels = protocolModels.filter(model => model.key !== item.key)" />
+            </div>
+          </div>
+          <el-button class="manualAdd" :icon="IconPlus" @click="addManualModel">手动添加模型</el-button>
+          <el-text class="fieldHint" type="info" size="small">{{ modelHint }}</el-text>
+        </el-form>
+        <el-form v-else class="importForm" labelPosition="top" :disabled="saving" @submit.prevent>
           <el-form-item v-if="activeTab === 'file'" class="sourceField" label="供应商文件">
             <div class="fileImport">
               <div class="fileSource">
@@ -72,7 +108,7 @@
             <el-input v-model="code" class="sourceInput" type="textarea" dir="ltr" :rows="10" resize="none" aria-label="供应商代码" />
           </el-form-item>
         </el-form>
-        <section class="providerTips" aria-label="使用 AI 生成供应商">
+        <section v-if="activeTab !== 'form'" class="providerTips" aria-label="使用 AI 生成供应商">
           <h4>还没有供应商文件？</h4>
           <p>让 AI 读取接口文档并生成代码，遇到登录可手动操作。</p>
           <div class="assistantActions">
@@ -90,7 +126,7 @@
     </el-scrollbar>
     <template #footer>
       <el-button :disabled="saving" @click="visible = false">取消</el-button>
-      <el-button type="primary" :loading="saving" :disabled="!source.trim()" @click="addProvider">确定添加供应商</el-button>
+      <el-button type="primary" :loading="saving" :disabled="mode === 'custom' && activeTab === 'form' ? !protocolReady : !source.trim()" @click="addProvider">确定添加供应商</el-button>
     </template>
   </el-dialog>
   <component v-if="providerAgentDialog" :is="providerAgentDialog" v-model="agentVisible" :askUserEnabled="askUserEnabled" @generated="useGeneratedSource" />
@@ -98,11 +134,13 @@
 
 <script setup lang="ts">
 import axios from "axios";
-import { computed, defineAsyncComponent, onBeforeUnmount, ref, shallowRef, watch, type Component } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, reactive, ref, shallowRef, watch, type Component } from "vue";
 import formCreate, { type Api, type Options } from "../../formCreate";
-import { IconFileCode, IconCode, IconFolderOpen, IconCopy, IconSparkles } from "@tabler/icons-vue";
-import { ElMessage } from "element-plus";
+import { IconFileCode, IconCode, IconFolderOpen, IconCopy, IconSparkles, IconKey, IconPlus, IconTrash, IconWallet } from "@tabler/icons-vue";
+import { ElMessage, type FormInstance, type FormRules } from "element-plus";
 import { mediaProviders } from "@toonflow/providers";
+import { createOpenaiImagesSource, openaiImageManualTemplate, openaiImagesProtocol, recommendedOpenaiImageModels, type OpenaiImageModelInput } from "@toonflow/providers/media/openaiImagesCatalog";
+import { createVolcengineArkSource, recommendedVolcengineArkModels, volcengineArkManualTemplate, volcengineArkProtocol, type VolcengineArkModelInput } from "@toonflow/providers/media/volcengineArkCatalog";
 import { modelIcon } from "@toonflow/model-icons";
 import messageMarkdown from "@/components/messageMarkdown.vue";
 import { invalidateNodeModels } from "@toonflow/nodes-scaffold/nodeAi";
@@ -127,11 +165,46 @@ const providerReadme = computed(() => {
   const provider = activeProvider.value;
   return provider && "readme" in provider && typeof provider.readme === "string" ? provider.readme : "";
 });
-const activeTab = ref<"file" | "code">("file");
+const activeTab = ref<"form" | "file" | "code">("form");
 const addMethods = [
+  { label: "接口配置", value: "form", icon: IconKey },
   { label: "文件导入", value: "file", icon: IconFileCode },
   { label: "粘贴代码", value: "code", icon: IconCode },
 ];
+type DraftModel = { key: string; preset: boolean } & (VolcengineArkModelInput | OpenaiImageModelInput);
+const protocolFormRef = ref<FormInstance>();
+const protocolForm = reactive({ id: "", label: "", apiUrl: "", protocol: volcengineArkProtocol, apiKey: "" });
+const protocolModels = ref<DraftModel[]>([]);
+const queryingBalance = ref(false);
+const balanceText = ref("");
+const balanceError = ref(false);
+let balanceRequest: AbortController | undefined;
+const imageProtocol = computed(() => protocolForm.protocol === openaiImagesProtocol);
+const protocolHint = computed(() => imageProtocol.value
+  ? "地址填站点根路径，不要带 /v1。文生图走 POST /v1/images/generations，参考图走 POST /v1/images/edits。直链保留 3 天，生成后会立即转存。不支持蒙版局部重绘。"
+  : "地址填站点根路径。余额走 GET /api/v1/account/balance，视频走 POST /api/v3/contents/generations/tasks 后轮询。参考视频只接受公网地址。");
+const modelHint = computed(() => imageProtocol.value
+  ? "推荐模型已带上分辨率档、画幅和参考图上限。不支持参考图的模型只有文生图。手动添加的模型先沿用 gpt-image-2 的规格，保存后可在编辑里调整。"
+  : "推荐模型已带上时长、分辨率、画幅和参考数量。手动添加的模型先沿用 Seedance 2.0 的规格，保存后可在编辑里调整。");
+const protocolReady = computed(() => !!protocolForm.id.trim() && !!protocolForm.label.trim() && !!protocolForm.apiUrl.trim() && !!protocolForm.apiKey.trim() && protocolModels.value.some(item => item.id.trim()));
+const protocolRules: FormRules = {
+  id: [
+    { required: true, message: "请输入 Provider ID", trigger: "blur" },
+    { pattern: /^[a-z][a-zA-Z0-9]*$/, message: "须以小写字母开头，只含字母和数字", trigger: "blur" },
+  ],
+  label: [{ required: true, whitespace: true, message: "请输入显示名称", trigger: "blur" }],
+  apiUrl: [{
+    validator: (_rule, value, callback) => {
+      try {
+        const url = new URL(value);
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
+        callback();
+      } catch { callback(new Error("请输入有效的 HTTP API 地址，不包含查询参数")); }
+    },
+    trigger: "blur",
+  }],
+  apiKey: [{ required: true, whitespace: true, message: "请输入 API 密钥", trigger: "blur" }],
+};
 const promptExpanded = ref(false);
 const code = ref("");
 const fileSource = ref("");
@@ -148,24 +221,52 @@ const formApi = shallowRef<Api>();
 const addedProvider = shallowRef<MediaProvider>();
 const formOptions = computed<Options>(() => ({ form: { labelPosition: "top", disabled: saving.value }, submitBtn: false, resetBtn: false }));
 const providerRules = computed(() => formCreate.copyRules([...(activeProvider.value?.rules ?? [])]));
-const source = computed(() => mode === "builtin" ? providerSources[selectedProvider.value] ?? "" : activeTab.value === "file" ? fileSource.value : code.value);
+const source = computed(() => mode === "builtin" ? providerSources[selectedProvider.value] ?? "" : activeTab.value === "file" ? fileSource.value : activeTab.value === "code" ? code.value : "");
 
 watch([activeTab, selectedProvider], () => {
   formError.value = "";
   addedProvider.value = undefined;
 });
 
+function recommendedDrafts() {
+  const models = protocolForm.protocol === openaiImagesProtocol ? recommendedOpenaiImageModels() : recommendedVolcengineArkModels();
+  return models.map(item => ({ ...item, key: crypto.randomUUID(), preset: true }));
+}
+
+function resetProtocolForm() {
+  balanceRequest?.abort();
+  Object.assign(protocolForm, { id: "", label: "", apiUrl: "", protocol: volcengineArkProtocol, apiKey: "" });
+  protocolModels.value = recommendedDrafts();
+  balanceText.value = "";
+  balanceError.value = false;
+  queryingBalance.value = false;
+}
+
 watch(visible, value => {
   agentOpening?.abort();
+  balanceRequest?.abort();
   agentOpening = undefined;
   openingAgent.value = false;
   if (!value) { agentVisible.value = false; return; }
   selectedProvider.value = mediaProviders[0]?.id ?? "";
-  activeTab.value = "file";
+  activeTab.value = "form";
   promptExpanded.value = false;
   formApi.value = undefined;
   addedProvider.value = undefined;
   code.value = fileSource.value = fileName.value = formError.value = "";
+  resetProtocolForm();
+}, { immediate: true });
+watch(() => protocolForm.protocol, (protocol, previous) => {
+  if (!visible.value || protocol === previous) return;
+  balanceRequest?.abort();
+  balanceText.value = "";
+  balanceError.value = false;
+  protocolModels.value = recommendedDrafts();
+});
+watch([() => protocolForm.apiUrl, () => protocolForm.apiKey], () => {
+  balanceRequest?.abort();
+  balanceText.value = "";
+  balanceError.value = false;
 });
 
 async function openAgent() {
@@ -189,7 +290,49 @@ async function openAgent() {
   } finally { if (agentOpening === controller) { agentOpening = undefined; openingAgent.value = false; } }
 }
 
-onBeforeUnmount(() => agentOpening?.abort());
+onBeforeUnmount(() => { agentOpening?.abort(); balanceRequest?.abort(); });
+
+function restoreRecommendedModels() {
+  protocolModels.value = recommendedDrafts();
+}
+
+function addManualModel() {
+  const template = protocolForm.protocol === openaiImagesProtocol ? openaiImageManualTemplate() : volcengineArkManualTemplate();
+  protocolModels.value.push({ ...template, key: crypto.randomUUID(), preset: false });
+}
+
+function formatAmount(value: number) {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 }).format(value);
+}
+
+async function queryBalance() {
+  if (queryingBalance.value || saving.value || !(await protocolFormRef.value?.validateField(["apiUrl", "apiKey"]).catch(() => false))) return;
+  queryingBalance.value = true;
+  balanceText.value = "";
+  balanceError.value = false;
+  const controller = new AbortController();
+  balanceRequest = controller;
+  try {
+    const { data } = await axios.post<{ code: number; data: { balance: number; unit: string; keyBalance: number | null; accountHidden: boolean }; message?: string }>(
+      "/api/providers/media/balance",
+      { apiUrl: protocolForm.apiUrl.trim(), apiKey: protocolForm.apiKey.trim(), protocol: volcengineArkProtocol },
+      { signal: controller.signal, timeout: 25000 },
+    );
+    if (controller.signal.aborted) return;
+    if (data.code !== 200 || !data.data) throw new Error(data.message || "余额查询失败");
+    const balance = data.data;
+    const account = `${formatAmount(balance.balance)} ${balance.unit}`;
+    balanceText.value = balance.accountHidden
+      ? `账户余额已隐藏，当前密钥余额 ${balance.keyBalance == null ? account : `${formatAmount(balance.keyBalance)} ${balance.unit}`}`
+      : balance.keyBalance == null ? `账户余额 ${account}，密钥额度无限制` : `账户余额 ${account}，密钥余额 ${formatAmount(balance.keyBalance)} ${balance.unit}`;
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    balanceError.value = true;
+    balanceText.value = axios.isAxiosError(error) ? error.response?.data?.message || "余额查询失败，请检查地址和密钥" : error instanceof Error ? error.message : "余额查询失败";
+  } finally {
+    if (balanceRequest === controller) { balanceRequest = undefined; queryingBalance.value = false; }
+  }
+}
 
 function useGeneratedSource(source: string) {
   activeTab.value = "code";
@@ -215,13 +358,37 @@ async function readSourceFile(event: Event) {
 }
 
 async function addProvider() {
-  if (saving.value || !source.value.trim()) return;
-  if (mode === "builtin" && !formApi.value) return;
+  const protocolMode = mode === "custom" && activeTab.value === "form";
+  if (saving.value || queryingBalance.value) return;
+  if (protocolMode) {
+    if (!(await protocolFormRef.value?.validate().catch(() => false))) return;
+  } else if (!source.value.trim() || (mode === "builtin" && !formApi.value)) return;
   saving.value = true;
   formError.value = "";
   try {
     let values: Record<string, unknown> | undefined;
-    if (mode === "builtin") {
+    let providerSource = source.value;
+    if (protocolMode) {
+      const id = protocolForm.id.trim();
+      if (mediaProviders.some(item => item.id.toLowerCase() === id.toLowerCase())) throw new Error("Provider ID 与内置供应商冲突");
+      const models = protocolModels.value.map(({ key: _key, preset: _preset, ...item }) => item);
+      providerSource = protocolForm.protocol === openaiImagesProtocol
+        ? createOpenaiImagesSource({
+          id, label: protocolForm.label, models: models.map(item => {
+            if (!("tiers" in item)) throw new Error("模型规格与 OpenAI 图像协议不一致");
+            return item;
+          }),
+        })
+        : createVolcengineArkSource({
+          id, label: protocolForm.label, models: models.map(item => {
+            if (!("durations" in item)) throw new Error("模型规格与火山方舟视频协议不一致");
+            return item;
+          }),
+        });
+      values = { apiUrl: protocolForm.apiUrl.trim(), apiKey: protocolForm.apiKey.trim() };
+      if (!(values.apiKey as string)) throw new Error("请填写 API 密钥");
+      if ((values.apiKey as string).length > 8192) throw new Error("API 密钥过长");
+    } else if (mode === "builtin") {
       if (!(await formApi.value!.validate().then(() => true, () => false))) return;
       values = formApi.value!.formData();
       if ("apiKey" in values) {
@@ -231,7 +398,7 @@ async function addProvider() {
       }
     }
     if (!addedProvider.value) {
-      const { data } = await axios.post<{ data: MediaProvider }>("/api/providers/media/add", { source: source.value });
+      const { data } = await axios.post<{ data: MediaProvider }>("/api/providers/media/add", { source: providerSource });
       addedProvider.value = data.data;
       emit("added", data.data);
       invalidateNodeModels("media");
@@ -361,6 +528,53 @@ async function copyPrompt() {
 
 .dialogContent {
   padding: 8px 4px;
+
+  .protocolForm {
+    .formGrid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0 20px;
+
+      .el-select { width: 100%; }
+    }
+
+    .balanceRow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-bottom: 8px;
+    }
+
+    .modelHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 16px 0 12px;
+    }
+
+    .modelList {
+      display: grid;
+      gap: 8px;
+
+      .modelRow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px;
+        align-items: center;
+        gap: 8px;
+
+        .el-button { margin: 0; padding: 4px; }
+      }
+    }
+
+    .manualAdd { width: 100%; margin: 12px 0; }
+
+    .fieldHint { display: block; line-height: 1.5; }
+
+    @media (max-width: 560px) {
+      .formGrid, .modelList .modelRow { grid-template-columns: 1fr; }
+    }
+  }
 
   .importForm {
     .methodField {

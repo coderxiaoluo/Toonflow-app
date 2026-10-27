@@ -14,6 +14,10 @@
     "./media/tfRouter": "./src/media/tfRouter.ts",
     "./media/apiMart": "./src/media/apiMart.ts",
     "./media/metaso": "./src/media/metaso.ts",
-    "./media/compshare": "./src/media/compshare.ts"
+    "./media/compshare": "./src/media/compshare.ts",
+    "./media/volcengineArk": "./src/media/volcengineArk.ts",
+    "./media/volcengineArkCatalog": "./src/media/volcengineArkCatalog.ts",
+    "./media/openaiImages": "./src/media/openaiImages.ts",
+    "./media/openaiImagesCatalog": "./src/media/openaiImagesCatalog.ts"
   }
 }

@@ -86,7 +86,10 @@ async function refresh(account: Account): Promise<void> {
       const context = queryContext(provider, 20000);
       balance = balanceSchema.parse(await waitForQuery(Promise.resolve().then(() => provider.getBalance!.call(context)), context.signal));
     }
-    catch (error) { throw new Error(provider.tool.errorMessage(error) || "余额查询失败"); }
+    catch (error) {
+      const status = error && typeof error === "object" && "status" in error && typeof error.status === "number" ? error.status : 0;
+      throw Object.assign(new Error(provider.tool.errorMessage(error) || "余额查询失败"), status >= 400 && status < 600 ? { status } : {});
+    }
     if (epoch !== account.epoch) {
       account.refreshRequested = true;
       return;

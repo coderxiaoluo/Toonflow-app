@@ -20,6 +20,7 @@
           <div class="providerMeta">
             <el-tag v-if="item.version" size="small" type="info" effect="plain">v{{ item.version }}</el-tag>
             <el-text size="small" type="info">{{ item.models.length }} 个模型</el-text>
+            <el-text v-if="accountText(item)" size="small" type="info">{{ accountText(item) }}</el-text>
           </div>
           <el-space class="itemActions" wrap>
             <el-button v-if="item.modelsUrl" text :icon="IconDownload" :loading="fetchingFile === item.fileName" :disabled="!!fetchingFile || !!deletingFile || !!item.loadError || !item.revision" @click="fetchModels(item)">获取模型</el-button>
@@ -50,6 +51,7 @@ import type { MediaProvider } from "./types";
 import { settings, saveSettings } from "@/stores/settings";
 import { invalidateNodeModels } from "@toonflow/nodes-scaffold/nodeAi";
 import tfAccount from "../../tfAccount.vue";
+import { getProviderBalance } from "@/lib/providerBilling";
 
 const { visible = true } = defineProps<{ visible?: boolean }>();
 const mediaProviderDialog = shallowRef<Component>();
@@ -63,7 +65,34 @@ const addMode = ref<"builtin" | "custom">("builtin");
 const editingProvider = ref<MediaProvider>();
 const deletingFile = ref("");
 const fetchingFile = ref("");
+const accountTexts = ref<Record<string, string>>({});
 let loadRequest = 0;
+
+function formatAmount(value: number) {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 }).format(value);
+}
+
+function accountText(provider: MediaProvider) {
+  if (!provider.supportsBalance || provider.id.toLowerCase() === "tfrouter") return "";
+  if (!getProviderApiKey(provider.id)) return "填写 API 密钥后可查询余额";
+  return accountTexts.value[provider.id] ?? "正在查询余额";
+}
+
+async function loadAccountText(provider: MediaProvider) {
+  if (!provider.supportsBalance || provider.id.toLowerCase() === "tfrouter" || !getProviderApiKey(provider.id)) return;
+  try {
+    const snapshot = await getProviderBalance(provider.id);
+    const balance = snapshot.balance;
+    accountTexts.value = { ...accountTexts.value, [provider.id]: balance
+      ? balance.keyBalance == null || balance.keyBalance === balance.balance
+        ? `余额 ${formatAmount(balance.balance)} ${balance.unit}`
+        : `账户 ${formatAmount(balance.balance)} ${balance.unit} · 密钥 ${formatAmount(balance.keyBalance)} ${balance.unit}`
+      : "暂无余额" };
+  } catch (error) {
+    const message = axios.isAxiosError(error) ? error.response?.data?.message || "余额查询失败" : "余额查询失败";
+    accountTexts.value = { ...accountTexts.value, [provider.id]: message };
+  }
+}
 
 function getProviderApiKey(id: string) {
   const configs = settings.value.mediaProviderConfigs as Record<string, { apiKey?: unknown }> | undefined;
@@ -97,7 +126,10 @@ async function loadProviders() {
   const request = ++loadRequest;
   try {
     const { data } = await axios.get<{ data: MediaProvider[] }>("/api/providers/media/list");
-    if (request === loadRequest) providers.value = data.data;
+    if (request === loadRequest) {
+      providers.value = data.data;
+      void Promise.all(data.data.map(item => loadAccountText(item)));
+    }
   } catch (error) {
     if (request === loadRequest) ElMessage.error(axios.isAxiosError(error) ? error.response?.data?.message || error.message : "读取媒体供应商失败");
   } finally {
