@@ -147,7 +147,6 @@ import { hasDesktopUpdate } from "@/stores/desktopUpdate";
 import { deviceHubEnabled, mobileConnection, mobileConnectionLabel } from "@/lib/mobile";
 import useWorkspaceFiles from "@/lib/workspaceFiles";
 import saveFile from "@/lib/saveFile";
-import http from "@/lib/http";
 import { waitForControlValue } from "@/lib/mcpControl";
 import settings from "@/components/settings/index.vue";
 import assetLibraryDialog from "./assetLibraryDialog.vue";
@@ -274,7 +273,7 @@ function openOnlineImage() {
 }
 
 async function loadAdvertisements() {
-  // ACT: 默认读取后台配置；开发环境显式指定预览模式时才使用临时预览。
+  // ACT: 不请求 https://api.toonflow.net 的官方频道广告。要自己展示时，在下方给 advertisements 赋值；开发环境也可加 ?advertisementPreview=text|image|web|carousel|stack 预览。
   const preview = router.currentRoute.value.query.advertisementPreview;
   if (import.meta.env.DEV && typeof preview === "string" && ["text", "image", "web", "carousel", "stack"].includes(preview)) {
     const now = Date.now();
@@ -338,13 +337,6 @@ async function loadAdvertisements() {
       bannerInterval: 5,
       sidebar,
     };
-    return;
-  }
-  try {
-    const result = await http<HomeAdvertisements>({ method: "GET", url: "/api/channel/community/getAdvertisements", signal: pageLifetime.signal });
-    if (!pageLifetime.signal.aborted) advertisements.value = result;
-  } catch (error) {
-    if (!pageLifetime.signal.aborted) console.warn("加载首页广告失败", error);
   }
 }
 

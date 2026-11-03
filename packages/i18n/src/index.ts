@@ -42,19 +42,22 @@ const formatters = new Map<string, IntlMessageFormat>();
 
 export function normalizeLocale(value: unknown): Locale | undefined {
   if (typeof value !== "string") return;
-  let language: Intl.Locale;
-  try { language = new Intl.Locale(value.trim().replaceAll("_", "-")); }
-  catch { return; }
-  const script = language.maximize().script;
-  if (language.language === "zh") {
-    if (script === "Hans") return "zh-CN";
-    if (script === "Hant") return "zh-TW";
+  try {
+    const language = new Intl.Locale(value.trim().replaceAll("_", "-"));
+    // ACT: 部分浏览器内核对无法识别的语言标签调用 maximize() 会抛 RangeError；一律按不支持处理。
+    const script = language.maximize().script;
+    if (language.language === "zh") {
+      if (script === "Hans") return "zh-CN";
+      if (script === "Hant") return "zh-TW";
+      return;
+    }
+    const base = language.language === "tl" ? "fil" : language.language === "in" ? "id" : language.language;
+    const locale = supportedLocales.find(item => item.code === base)?.code;
+    // ACT: 每种新增语言只提供一种文字体系；pa-Arab/pa-PK 等不能误用 Gurmukhi 译文。
+    return locale && script === new Intl.Locale(locale).maximize().script ? locale : undefined;
+  } catch {
     return;
   }
-  const base = language.language === "tl" ? "fil" : language.language === "in" ? "id" : language.language;
-  const locale = supportedLocales.find(item => item.code === base)?.code;
-  // ACT: 每种新增语言只提供一种文字体系；pa-Arab/pa-PK 等不能误用 Gurmukhi 译文。
-  return locale && script === new Intl.Locale(locale).maximize().script ? locale : undefined;
 }
 
 export function detectLocale(languages: readonly string[]): Locale {
