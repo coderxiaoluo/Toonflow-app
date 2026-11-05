@@ -9,13 +9,6 @@
       <loadingPage v-model:visible="workspaceStore.projectLoadingVisible" v-model:drawn="workspaceStore.projectLoadingDrawn" :active="workspaceStore.projectLoading" />
       <ffmpegRequired />
       <desktopQuit v-if="actualPlatform.isDesktop" />
-      <updateBox
-        v-if="updateBoxBuild && !installFailure"
-        v-model="updateBoxVisible"
-        :version="updateBoxBuild.version"
-        :buildCode="updateBoxBuild.hash"
-        @opened="rememberUpdateBox"
-        @close="rememberUpdateBox" />
       <el-dialog v-if="installFailure" v-model="installFailureVisible" title="更新未成功" width="min(520px, 92vw)" alignCenter appendToBody :closeOnClickModal="false">
         <div v-if="installFailure" class="installFailureContent">
           <p class="failureMessage">{{ installFailure.message }}</p>
@@ -42,7 +35,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch, watchEffect } from "vue";
-import { ElMessage, useZIndex } from "element-plus";
+import { useZIndex } from "element-plus";
 import { elementLocales } from "@toonflow/i18n/elementPlus";
 import { ConfigProvider, type GlobalConfigProvider } from "tdesign-vue-next";
 import tdesignZhCn from "tdesign-vue-next/es/locale/zh_CN";
@@ -56,14 +49,13 @@ import { locale } from "@toonflow/i18n/vue";
 import type { updateSnapshot } from "@toonflow/server/desktop";
 import { chatLocale } from "@/lib/i18n";
 import { actualPlatform, isMobile } from "@/lib/platform";
-import { saveSettings, settings, uiSettings } from "@/stores/settings";
+import { uiSettings } from "@/stores/settings";
 import { desktopUpdateSnapshot, stopDesktopUpdateObservation } from "@/stores/desktopUpdate";
 import { useWorkspaceStore } from "@/stores/workspace";
 import loadingPage from "@/components/loadingPage.vue";
 import { useMcpControl } from "@/lib/mcpControl";
 import ffmpegRequired from "@/components/settings/ffmpegRequired.vue";
 import desktopQuit from "@/components/desktopQuit.vue";
-import updateBox from "@/components/updateBox.vue";
 import "element-plus/theme-chalk/dark/css-vars.css";
 
 useMcpControl();
@@ -78,9 +70,6 @@ const elementLocale = computed(() => elementLocales[locale.value]);
 // ACT: TDesign 自带语言包声明为 readonly，而 ConfigProvider 的只读使用接口声明为可写。
 const tdesignLocale = computed(() => ({ ...tdesignLocales[locale.value], chat: chatLocale.value }) as unknown as GlobalConfigProvider);
 
-const updateBoxVisible = ref(false);
-const updateBoxBuild = shallowRef<{ version: string; hash: string }>();
-const shownUpdateBuilds = new Set<string>();
 const installFailureVisible = ref(false);
 const installFailure = shallowRef<updateSnapshot["installFailure"]>();
 const shownInstallAttempts = new Set<string>();
@@ -89,7 +78,6 @@ watch(desktopUpdateSnapshot, snapshot => {
   if (!actualPlatform.isDesktop || !snapshot) return;
   if (snapshot.installFailure) {
     installFailure.value = snapshot.installFailure;
-    updateBoxVisible.value = false;
     const attemptId = snapshot.installFailure.attemptId;
     if (shownInstallAttempts.has(attemptId)) return;
     shownInstallAttempts.add(attemptId);
@@ -108,23 +96,7 @@ watch(desktopUpdateSnapshot, snapshot => {
     installFailure.value = undefined;
     installFailureVisible.value = false;
   }
-  const buildKey = `${snapshot.version}:${snapshot.hash}`;
-  const seenBuilds = settings.value.updateBoxSeenBuilds;
-  if (shownUpdateBuilds.has(buildKey) || Array.isArray(seenBuilds) && seenBuilds.includes(buildKey)) return;
-  shownUpdateBuilds.add(buildKey);
-  updateBoxBuild.value = { version: snapshot.version, hash: snapshot.hash };
-  updateBoxVisible.value = true;
 }, { immediate: true });
-
-function rememberUpdateBox() {
-  if (!updateBoxBuild.value) return;
-  const buildKey = `${updateBoxBuild.value.version}:${updateBoxBuild.value.hash}`;
-  // ACT: 桌面端启动端口会变化，复用应用设置；展示完成或提前关闭时记录，保存队列内去重。
-  void saveSettings(current => {
-    const seenBuilds = Array.isArray(current.updateBoxSeenBuilds) ? current.updateBoxSeenBuilds.filter(value => typeof value === "string") : [];
-    return seenBuilds.includes(buildKey) ? undefined : { updateBoxSeenBuilds: [...seenBuilds, buildKey] };
-  }).catch(() => { ElMessage.warning("更新说明的展示记录保存失败，下次启动时可能再次显示。"); });
-}
 
 function preventPageZoom(event: WheelEvent) {
   if (event.ctrlKey || event.metaKey) event.preventDefault();

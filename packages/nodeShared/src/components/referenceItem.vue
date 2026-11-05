@@ -13,6 +13,8 @@
       :key="JSON.stringify([item.source, item.sourceHandle])"
       :item="item"
       :index="index + 1"
+      :prepareVideo="prepareVideos"
+      @preparation="status => emit('preparation', item, status)"
       tabindex="0"
       aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
       @keydown.alt.left.stop.prevent="moveReference(index, index - 1)"
@@ -27,8 +29,9 @@ import { VueDraggable } from "vue-draggable-plus";
 import type { NodeInputValue } from "@toonflow/nodes-scaffold/values";
 import referenceCard from "./referenceCard.vue";
 
+defineProps<{ prepareVideos?: boolean }>();
 const items = defineModel<NodeInputValue[]>({ required: true });
-const emit = defineEmits<{ remove: [item: NodeInputValue]; preview: [item: NodeInputValue, url: string] }>();
+const emit = defineEmits<{ remove: [item: NodeInputValue]; preview: [item: NodeInputValue, url: string]; preparation: [item: NodeInputValue, status: { ready: boolean; error: string }] }>();
 
 function moveReference(from: number, index: number) {
   const item = items.value[from];

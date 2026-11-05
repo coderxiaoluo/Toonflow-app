@@ -53,8 +53,9 @@ import type { NodeData } from "@toonflow/nodes-scaffold/connection";
 import type { NodeInputValue } from "@toonflow/nodes-scaffold/values";
 import { useMediaPreview } from "../mediaPreview";
 
-const props = defineProps<{ item: NodeInputValue; index: number }>();
-const emit = defineEmits<{ remove: []; preview: [url: string] }>();
+const props = defineProps<{ item: NodeInputValue; index: number; prepareVideo?: boolean }>();
+const emit = defineEmits<{ remove: []; preview: [url: string]; preparation: [status: { ready: boolean; error: string }] }>();
+const videoReady = ref(false);
 const { findNode } = useVueFlow();
 const imageRef = ref<InstanceType<typeof ElImage>>();
 const previewReadError = ref("");
@@ -71,6 +72,7 @@ const title = computed(() => {
 });
 
 watch(media, () => {
+  videoReady.value = false;
   previewReadError.value = "";
   duration.value = "";
   videoThumbnail.value = "";
@@ -81,7 +83,14 @@ const previewUrl = useFileUrl(media, error => {
 });
 const { src: mediaSrc, preparing: preparingPreview, error: mediaError, handleError, handleLoaded } = useMediaPreview(previewUrl, () => props.item.dataType === "VIDEO" ? "video" : "image");
 const previewError = computed(() => previewReadError.value || mediaError.value);
-watch(mediaSrc, () => { duration.value = ""; videoThumbnail.value = ""; }, { flush: "sync" });
+watch(mediaSrc, () => { videoReady.value = false; duration.value = ""; videoThumbnail.value = ""; }, { flush: "sync" });
+watch([previewUrl, () => props.prepareVideo], ([url, prepare]) => {
+  if (url && prepare && props.item.dataType === "VIDEO" && media.value
+    && (media.value.mimeType === "video/quicktime" || /\.mov$/i.test(media.value.url))) handleError();
+}, { immediate: true, flush: "sync" });
+watch([media, videoReady, previewError, preparingPreview], () => {
+  emit("preparation", { ready: videoReady.value && !preparingPreview.value && !previewError.value, error: previewError.value });
+}, { immediate: true, flush: "sync" });
 
 watch([mediaSrc, previewError, preparingPreview, videoThumbnail], ([url, error, preparing, thumbnail]) => {
   emit("preview", error || preparing ? "" : props.item.dataType === "VIDEO" ? thumbnail : url);
@@ -90,7 +99,8 @@ onBeforeUnmount(() => emit("preview", ""));
 
 function readVideoPreview(event: Event) {
   const video = event.currentTarget as HTMLVideoElement;
-  if (!handleLoaded(event)) { videoThumbnail.value = ""; return; }
+  if (!handleLoaded(event)) { videoReady.value = false; videoThumbnail.value = ""; return; }
+  videoReady.value = true;
   const canvas = document.createElement("canvas");
   const scale = 96 / Math.max(video.videoWidth, video.videoHeight);
   canvas.width = Math.max(1, Math.round(video.videoWidth * scale));

@@ -43,11 +43,20 @@
         <referenceItem
           v-if="refList.length"
           v-model="refList"
+          prepareVideos
+          @preparation="setReferencePreparation"
           @preview="setReferencePreview"
           @remove="removeReference" />
         <div v-if="frameMode" class="referenceHint">
           {{ selectedMode === "startFrameOptional" ? "仅一张图片时作为尾帧；两张图片按顺序作为首帧、尾帧" : "图片引用按顺序作为首帧、尾帧" }}
         </div>
+        <div v-if="referencePreparationMessage" class="referenceHint" role="status">{{ referencePreparationMessage }}</div>
+        <details v-if="diagnostics.length" class="generationDiagnostics nodrag nopan" open>
+          <summary>参考视频处理记录</summary>
+          <ol aria-live="polite">
+            <li v-for="(message, index) in diagnostics" :key="index">{{ message }}</li>
+          </ol>
+        </details>
         <promptInput v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" :materials="materialMentions" :selectMaterial="selectMaterialReference" :selectAsset="selectAssetReference" expandable />
         <div class="promptFooter">
           <el-select
@@ -90,7 +99,7 @@
             <el-button
               class="sendButton"
               :icon="generating ? IconPlayerStop : IconArrowUp"
-              :disabled="cancelling || deleting || uploading || (!generating && !pendingRecovery && (!generationPrompt || !selectedModel))"
+              :disabled="cancelling || deleting || uploading || (!generating && !pendingRecovery && (!generationPrompt || !selectedModel || !!referencePreparationMessage))"
               :title="generating ? '停止生成' : pendingRecovery ? '复查任务' : '生成视频'"
               :aria-label="generating ? '停止生成' : pendingRecovery ? '复查任务' : '生成视频'"
               @click="generating ? generationState.cancel().catch(error => showNodeError(error, '停止生成失败')) : startGeneration().catch((error) => showNodeError(error, '视频生成失败'))" />
@@ -107,6 +116,7 @@ import { computed, nextTick, onMounted, onScopeDispose, ref, shallowRef, watch }
 import { ElButton, ElCard, ElSelect, ElOption, ElOptionGroup, ElLoading, ElDropdown, ElDropdownMenu, ElDropdownItem } from "element-plus";
 import { IconCameraAi, IconSparkles, IconArrowUp, IconPlayerStop, IconTransfer, IconScissors, IconPhotoScan, IconPlayerSkipBack, IconPlayerSkipForward } from "@tabler/icons-vue";
 import { nodeSkeleton, nodeTools, useNode, z, type NodeMediaModel, type NodeVideoRequest, type NodeHandle } from "@toonflow/nodes-scaffold/runtime";
+import type { NodeInputValue } from "@toonflow/nodes-scaffold/values";
 import { groupNodeModels } from "@toonflow/node-shared/groupNodeModels";
 import modelLabel from "@toonflow/node-shared/modelLabel";
 import { showNodeError } from "@toonflow/node-shared/showNodeError";
@@ -146,6 +156,23 @@ data.value.generateAudio ??= true;
 data.value.ratio ??= "9:16";
 data.value.other ??= {};
 const { refList, referenceMentions, materialMentions, selectMaterialReference, selectAssetReference, setReferencePreview, removeReference } = useNodeReferences();
+const referencePreparation = ref(new Map<string, { ready: boolean; error: string }>());
+function referencePreparationKey(item: NodeInputValue) {
+  return JSON.stringify([item.source, item.sourceHandle, item.value]);
+}
+function setReferencePreparation(item: NodeInputValue, status: { ready: boolean; error: string }) {
+  if (item.dataType === "VIDEO") referencePreparation.value.set(referencePreparationKey(item), status);
+}
+watch(refList, values => {
+  const keys = new Set(values.map(referencePreparationKey));
+  for (const key of referencePreparation.value.keys()) if (!keys.has(key)) referencePreparation.value.delete(key);
+}, { flush: "sync" });
+const referencePreparationMessage = computed(() => {
+  const states = refList.value.filter(item => item.dataType === "VIDEO").map(item => referencePreparation.value.get(referencePreparationKey(item)));
+  const error = states.find(state => state?.error)?.error;
+  if (error) return `参考视频准备失败：${error}，请重新选择素材`;
+  return states.some(state => !state?.ready) ? "参考视频正在准备或转换为 MP4，完成后才能发送" : "";
+});
 const models = shallowRef<NodeMediaModel[]>([]);
 const modelsLoading = ref(false);
 const uploading = ref(false);
@@ -157,7 +184,7 @@ const actions = ref<InstanceType<typeof videoActions>>();
 const videoWidth = ref(0);
 let generationController: AbortController | undefined;
 const generationState = useNodeGeneration(outputs, () => generationController?.abort(), { ai });
-const { generating, pendingRecovery, cancelling } = generationState;
+const { diagnostics, generating, pendingRecovery, cancelling } = generationState;
 let generation: Promise<void> | undefined;
 let modelsRequest: Promise<void> | undefined;
 const genericVideoRatios = ["16:9", "9:16", "1:1", "4:3", "3:4"];
@@ -357,6 +384,7 @@ async function startGeneration() {
     generation = generationState.resume().catch(error => showNodeError(error, "视频任务复查失败"));
     return { status: "generating" };
   }
+  if (referencePreparationMessage.value) throw new Error(referencePreparationMessage.value);
   const choice = selectedModel.value;
   // ACT: 提交时按稳定 ID 解析，避免依赖编辑器挂载及异步重排同步。
   const references = referenceMentions.value;
@@ -519,6 +547,23 @@ nodeTools.register({
 </script>
 
 <style scoped lang="scss">
+.promptCard {
+  .generationDiagnostics {
+    margin-bottom: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--el-text-color-regular);
+    overflow-wrap: anywhere;
+
+    summary { cursor: pointer; }
+    ol {
+      margin: 6px 0 0;
+      padding-left: 20px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+  }
+}
 .videoContent {
   .nodeSkeleton.resized & {
     height: 100%;

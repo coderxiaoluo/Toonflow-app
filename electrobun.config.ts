@@ -6,7 +6,7 @@ export default {
   app: {
     name: "toonflow",
     identifier: "local.toonflow.desktop",
-    version: process.env.appVersion ?? "2.0.0",
+    version: process.env.appVersion ?? "1.0.0",
     urlSchemes: ["toonflow"],
   },
   build: {

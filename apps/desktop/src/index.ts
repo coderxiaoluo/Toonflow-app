@@ -9,7 +9,6 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { dlopen, ptr } from "bun:ffi";
 import type { DesktopRuntime, PluginInstallRequest } from "@toonflow/server/desktop";
-import { showNativeSplash } from "@toonflow/startup";
 import Electrobun, { ApplicationMenu, BrowserWindow, PATHS, Screen, Utils, Updater } from "electrobun/main";
 import { parseInstallUrl } from "./protocol";
 import saveFile, { selectSaveFile } from "./saveFile";
@@ -72,7 +71,6 @@ async function restoreInstallRegistration(installDirectory: string) {
 }
 
 async function start() {
-  let splash: Awaited<ReturnType<typeof showNativeSplash>> | undefined;
   let desktopConnection: Awaited<ReturnType<typeof import("./connection").default>> | undefined;
   let isClosing = false;
 
@@ -80,9 +78,8 @@ async function start() {
     // Windows 的 data 与 app 同级；macOS 的 data 与 .app 同级，避免随程序更新被替换。
     const installDirectory = resolve(PATHS.RESOURCES_FOLDER, process.platform === "darwin" ? "../../.." : "../..");
     const dataDirectory = process.env.TOONFLOW_DATA_DIR ?? resolve(installDirectory, "data");
-    // ACT: 先显示原生动画，再加载服务，避免初始化期间没有反馈。
     const startupSettings = await file(resolve(dataDirectory, "settings.json")).json().catch((error) => {
-      if (error.code !== "ENOENT") console.error("读取启动设置失败，使用默认启动动画：", error);
+      if (error.code !== "ENOENT") console.error("读取启动设置失败，使用默认语言：", error);
       return null;
     });
     setLocaleFallback(() => normalizeLocale(startupSettings?.settings?.ui?.language)
@@ -109,21 +106,6 @@ async function start() {
           { role: "selectAll", label: t`全选` },
         ] },
       ]);
-    }
-    try {
-      if (startupSettings?.settings?.ui?.startupAnimation !== false) {
-        splash = await showNativeSplash(resolve(PATHS.VIEWS_FOLDER, "../startup"), () => {
-          isClosing = true;
-          splash = undefined;
-          Utils.quit();
-        });
-      }
-    } catch (error) {
-      console.error("原生启动画面创建失败：", error);
-    }
-    if (isClosing) {
-      splash?.close();
-      return;
     }
     setRuntimeHost("desktop");
     const { createApp } = await import("@toonflow/server/app");
@@ -197,7 +179,7 @@ async function start() {
           window.addEventListener("auxclick", openLink, true);
         })();
       `,
-      hidden: Boolean(splash),
+      hidden: false,
       frame: {
         width,
         height,
@@ -336,13 +318,6 @@ async function start() {
       async ready(failed = false) {
         if (isClosing) return;
         if (!isShowing) {
-          if (splash) {
-            await splash.finish();
-            if (isClosing || !splash) return;
-            mainWindow.show();
-            splash.close();
-            splash = undefined;
-          }
           isShowing = true;
           // ACT: 安装器已完成注册；更新后的修复仅首次展示时执行，不阻塞主窗口。
           void restoreInstallRegistration(installDirectory);
@@ -422,8 +397,6 @@ async function start() {
       isClosing = true;
       deliverInstall = undefined;
       pendingInstalls.length = 0;
-      splash?.close();
-      splash = undefined;
     });
     function saveRuntime(port: number) {
       if (process.platform === "win32") {
@@ -438,7 +411,6 @@ async function start() {
   } catch (error) {
     isClosing = true;
     await desktopConnection?.close().catch(error => console.error("设备连接关闭失败：", error));
-    splash?.close();
     console.error("桌面启动失败：", error);
     if (process.platform === "win32") {
       try { confirmWindowsUpdateStartup(PATHS.RESOURCES_FOLDER, true); }

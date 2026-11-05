@@ -99,6 +99,7 @@ export type NodeMediaTaskStatus = {
   providerData?: unknown;
   nodeId?: string;
   canvasPath?: string;
+  diagnostics?: string[];
   result?: MediaTaskResult;
 };
 export type NodeMediaTaskOptions = {

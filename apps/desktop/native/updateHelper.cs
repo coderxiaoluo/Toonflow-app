@@ -752,7 +752,7 @@ internal static class updateHelper
         {
             registry.SetValue("toonflowInstallDirectory", root);
             registry.SetValue("InstallLocation", root);
-            registry.SetValue("DisplayName", "Toonflow");
+            registry.SetValue("DisplayName", "xiaobo");
             registry.SetValue("DisplayVersion", version);
             registry.SetValue("DisplayIcon", Path.Combine(root, "app", "Resources", "app.ico"));
             registry.SetValue("UninstallString", quote(uninstaller));

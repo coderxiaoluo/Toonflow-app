@@ -333,7 +333,7 @@ export async function generateVolcengineVideo(this: ArkThis, request: Referenced
     resolution,
     duration,
     ...(!modifyingVideo && request.ratio ? { ratio: request.ratio } : {}),
-    ...(/^(?:seedance-|video-test$)/.test(request.model) ? { billing_mode: "token" } : {}),
+    ...(/^(?:seedance-|video-test$)/.test(request.model) ? { billing_mode: "tokens" } : {}),
     ...(typeof request.generateAudio === "boolean" ? { generate_audio: request.generateAudio } : {}),
     ...(typeof request.watermark === "boolean" ? { watermark: request.watermark } : {}),
   });
@@ -345,7 +345,7 @@ export async function generateVolcengineVideo(this: ArkThis, request: Referenced
       return [{ mediaType: "video", type: "url", url: state.videoUrl }];
     }
     if (["failed", "failure", "error", "rejected", "cancelled", "canceled", "expired"].includes(state.status)) {
-      fail(state.message || "视频生成失败，费用已按服务方规则退回");
+      throw Object.assign(new Error(state.message || "视频生成失败，请核对供应商任务及费用状态"), { status: 400, code: "MEDIA_TASK_FAILED" });
     }
     await wait(signal);
   }

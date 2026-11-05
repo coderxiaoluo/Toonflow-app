@@ -34,7 +34,7 @@ export type updateSnapshot = {
 };
 
 export interface DesktopRuntime {
-  createMediaVideoTunnel?(directory: string, path: string, signal?: AbortSignal): Promise<{ url: string; stop(): Promise<void> }>;
+  createMediaVideoTunnel?(directory: string, path: string, signal?: AbortSignal, report?: (message: string) => void): Promise<{ url: string; stop(): Promise<void> }>;
   openUrl(url: string): void;
   showNotification(options: { title: string; body?: string; silent?: boolean }): void;
   showItemInFolder(path: string): void;

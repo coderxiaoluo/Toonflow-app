@@ -1,6 +1,6 @@
 import { t, translateMessage } from "@/lib/i18n";
-import { mkdir, readFile, realpath, stat, unlink } from "@toonflow/file";
-import { join, relative } from "node:path";
+import { mkdir, mkdtemp, open, readFile, realpath, rm, stat, unlink, writeFile } from "@toonflow/file";
+import { extname, join, relative } from "node:path";
 import { createHash } from "node:crypto";
 import { mediaProviders, type Provider, type ProviderTaskData } from "@toonflow/providers";
 import { validateVolcengineVideoUrl } from "@toonflow/providers/media/volcengineArk";
@@ -10,6 +10,7 @@ import { getMediaProvider, listMediaProviders, loadMediaProviderSource } from "@
 import { lockWorkspaceFiles, resolveWorkspacePath, writeWorkspaceFile } from "@/utils/workspace/files";
 import { beginGeneration, getProviderPrice } from "@/utils/media/billing";
 import { detectMimeType, readPriceReference } from "@/utils/media/priceReference";
+import { createPreview } from "@/utils/media/preview";
 
 const maxMediaSize = 100 * 1024 * 1024;
 export type MediaGenerationCheckpoint = {
@@ -24,6 +25,7 @@ type MediaGenerationTask = {
   resume: boolean;
   checkpoint: MediaGenerationCheckpoint;
   save: (patch: Partial<MediaGenerationCheckpoint>) => Promise<void>;
+  report: (message: string) => void;
 };
 const mediaExtensions: Record<string, string> = {
   "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif",
@@ -240,7 +242,7 @@ export async function generateMedia(
   request: MediaGenerationRequest,
   signal?: AbortSignal,
   task?: MediaGenerationTask,
-  createVideoTunnel?: (directory: string, path: string, signal?: AbortSignal) => Promise<{ url: string; stop(): Promise<void> }>,
+  createVideoTunnel?: (directory: string, path: string, signal?: AbortSignal, report?: (message: string) => void) => Promise<{ url: string; stop(): Promise<void> }>,
 ): Promise<GeneratedMedia[]> {
   signal?.throwIfAborted();
   if (!request.prompt.trim()) invalid("请输入生成提示词");
@@ -275,6 +277,7 @@ export async function generateMedia(
   };
   const written: string[] = [];
   const result: GeneratedMedia[] = [];
+  const temporaryVideoDirectories: string[] = [];
   try {
     signal?.throwIfAborted();
     let assets: MediaAsset[] | undefined;
@@ -301,7 +304,35 @@ export async function generateMedia(
       try {
         for (const video of localVideos) {
           signal?.throwIfAborted();
-          tunnels.push(await createVideoTunnel!(directory, video.path, signal));
+          let videoPath = video.path;
+          {
+            const source = await resolveWorkspacePath(directory, video.path);
+            const handle = await open(source.path, "r");
+            try {
+              const info = await handle.stat();
+              if (!info.isFile() || !info.size || info.size > maxMediaSize) invalid("参考媒体须为不超过 100 MB 的非空文件");
+              const header = Buffer.alloc(16);
+              const { bytesRead } = await handle.read(header, 0, header.length, 0);
+              if (extname(video.path).toLowerCase() === ".mov" || detectMimeType(header.subarray(0, bytesRead), video.mimeType) === "video/quicktime") {
+                // 复用兼容预览的 H.264/AAC 转码、安全输入限制、超时与取消处理，不改写原素材。
+                const active = signal ?? new AbortController().signal;
+                const content = await handle.readFile({ signal: active });
+                if (!content.length || content.length > maxMediaSize) invalid("参考媒体为空或超过 100 MB");
+                task?.report(`参考视频 ${localVideos.indexOf(video) + 1}：MOV 正在转换为 MP4（H.264/AAC，保留原文件）`);
+                const converted = await createPreview(content, "video", active);
+                active.throwIfAborted();
+                const temporaryVideoDirectory = await mkdtemp(join(directory, "toonflowVideo"));
+                temporaryVideoDirectories.push(temporaryVideoDirectory);
+                const output = join(temporaryVideoDirectory, "source.mp4");
+                await writeFile(output, converted.data, { flag: "wx", mode: 0o600, signal: active });
+                videoPath = relative(directory, output).replace(/\\/g, "/");
+                task?.report(`参考视频 ${localVideos.indexOf(video) + 1}：转换完成，MP4 ${(converted.data.length / 1024 / 1024).toFixed(2)} MB（临时副本，仅用于本次提交）`);
+              }
+            } finally { await handle.close(); }
+          }
+          const report = (message: string) => task?.report(`参考视频 ${localVideos.indexOf(video) + 1}：${message}`);
+          report("正在建立临时公网链接并校验 MP4 头尾分段读取");
+          tunnels.push(await createVideoTunnel!(directory, videoPath, signal, report));
         }
         const effectiveRequest = modifyingVideo && tunnels.length ? {
           ...request, other: { ...request.other, sourceVideoUrl: tunnels[0]!.url },
@@ -310,6 +341,7 @@ export async function generateMedia(
           tunnels.length ? tunnels.map(tunnel => ({ type: "url" as const, url: tunnel.url })) : undefined);
         signal?.throwIfAborted();
         finish = beginGeneration(provider);
+        if (localVideos.length) task?.report("正在提交 MP4 公网地址并等待供应商结果；不是二进制文件上传");
         if (type === "audio") assets = await provider.generateAudio!(parameters as AudioRequest);
         else if (type === "image") assets = await provider.generateImage!(parameters as ImageRequest);
         else assets = await provider.generateVideo!(parameters as VideoRequest);
@@ -360,5 +392,9 @@ export async function generateMedia(
     // ACT: 只回滚本次创建的文件，保留目录中已有的节点资源。
     if (!task) await Promise.all(written.map(path => unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; })));
     throw err;
-  } finally { finish(); }
+  } finally {
+    finish();
+    // 只清理由本次 mkdtemp 独占创建的本地转码目录，隧道已在内层 finally 停止。
+    for (const directory of temporaryVideoDirectories) await rm(directory, { recursive: true, force: true });
+  }
 }

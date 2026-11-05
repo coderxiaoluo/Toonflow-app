@@ -39,6 +39,7 @@ const recordSchema = z.strictObject({
   state: z.enum(["running", "interrupted", "succeeded", "failed", "cancelled"]),
   createdAt: z.number().finite().nonnegative(), updatedAt: z.number().finite().nonnegative(),
   checkpoint: checkpointSchema,
+  diagnostics: z.array(z.string().max(1024)).max(64).optional(),
   blobs: z.array(blobSchema).optional(),
   result: z.strictObject({ code: z.number().int(), data: z.array(mediaSchema).nullable(), message: z.string() }).optional(),
 }).superRefine((record, context) => {
@@ -242,15 +243,21 @@ function publicData(task: MediaTask) {
 }
 
 async function snapshot(task: MediaTask) {
-  const { taskId, state, nodeId, canvasPath, result } = task.record;
-  return { taskId, state, resumable: await resumable(task), nodeId, canvasPath, providerData: publicData(task), ...(result ? { result } : {}) };
+  const { taskId, state, nodeId, canvasPath, result, diagnostics } = task.record;
+  return { taskId, state, resumable: await resumable(task), nodeId, canvasPath, diagnostics, providerData: publicData(task), ...(result ? { result } : {}) };
 }
 
-async function execute(task: MediaTask, resume: boolean, createVideoTunnel?: (directory: string, path: string, signal?: AbortSignal) => Promise<{ url: string; stop(): Promise<void> }>) {
+async function execute(task: MediaTask, resume: boolean, createVideoTunnel?: Parameters<typeof generateMedia>[5]) {
   const { record } = task;
   try {
     const files = await generateMedia(record.cwd, record.mediaType!, record.request!, task.controller!.signal, {
       taskId: record.taskId, resume, checkpoint: record.checkpoint,
+      report: message => {
+        // ACT: 每任务最多保留 64 条阶段证据，不逐字节写盘；随正常 checkpoint 和最终结果持久化。
+        const diagnostics = record.diagnostics ??= [];
+        if (diagnostics.length >= 64) diagnostics.splice(0, 1);
+        diagnostics.push(message.slice(0, 1024));
+      },
       save: patch => locked(task.key, async () => {
         if (record.state !== "running") throw new Error("生成已停止");
         Object.assign(record.checkpoint, patch);

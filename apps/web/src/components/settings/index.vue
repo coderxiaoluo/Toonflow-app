@@ -45,7 +45,6 @@ import {
   IconCode,
   IconUserCog,
   IconSubtitlesAi,
-  IconUsersGroup,
 } from "@tabler/icons-vue";
 
 const settingsPanels = [
@@ -66,7 +65,6 @@ const settingsPanels = [
     component: defineAsyncComponent(() => import("./panels/personalization/index.vue")),
   },
   { id: "developer", label: "开发者选项", icon: IconCode, component: defineAsyncComponent(() => import("./panels/developer/index.vue")) },
-  { id: "multiTenant", label: "多租户能力", icon: IconUsersGroup, component: defineAsyncComponent(() => import("./panels/multiTenant/index.vue")) },
   { id: "about", label: "关于", icon: IconInfoCircle, component: defineAsyncComponent(() => import("./panels/about/index.vue")) },
 ];
 const activePanel = shallowRef(settingsPanels[0]!);

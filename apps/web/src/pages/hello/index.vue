@@ -32,16 +32,8 @@
 
       <footer class="pageFooter">
         <el-button class="deviceLink" size="small" :icon="IconDevices" @click="mobileConnectVisible = true">{{ mobileConnectionLabel }}</el-button>
-        <p>© {{ new Date().getFullYear() }} Toonflow · 保留所有权利。</p>
       </footer>
     </section>
-    <div class="artPanel" aria-hidden="true">
-      <bg class="artBg" />
-      <div class="artBrand">
-        <span class="artLogo" v-html="logoSvg" />
-        <span class="artName">xiaobo</span>
-      </div>
-    </div>
     <mobileConnect v-model="mobileConnectVisible" />
   </main>
 </template>
@@ -54,8 +46,6 @@ import { IconArrowLeft, IconDevices } from "@tabler/icons-vue";
 import { customProviders } from "@/stores/settings";
 import { useHelloStore } from "@/stores/hello";
 import anonymousData from "@/lib/anonymousData";
-import logoSvg from "@toonflow/assets/logo.svg?raw";
-import bg from "./bg.vue";
 import languageSelect from "@/components/languageSelect.vue";
 import { mobileConnectionLabel } from "@/lib/mobile";
 
@@ -85,7 +75,7 @@ async function completeSetup() {
 <style lang="scss" scoped>
 .hello {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 100svh;
   padding: 8px;
   background: var(--el-bg-color);
@@ -95,7 +85,7 @@ async function completeSetup() {
   .pageLanguage {
     position: fixed;
     top: 16px;
-    inset-inline-end: calc(50% + 8px);
+    inset-inline-end: 16px;
     z-index: 2;
     max-width: calc(50% - 24px);
   }
@@ -203,10 +193,6 @@ async function completeSetup() {
         }
       }
 
-      p {
-        margin: 10px 0 0;
-        line-height: 1.6;
-      }
     }
   }
 
@@ -226,54 +212,6 @@ async function completeSetup() {
     }
   }
 
-  .artPanel {
-    position: relative;
-    min-width: 0;
-    display: flex;
-    align-items: flex-start;
-    justify-content: flex-end;
-    padding: 28px;
-    border-radius: calc(var(--ui-radius) * 1.125);
-    overflow: hidden;
-    background: radial-gradient(ellipse at 76% 82%, #f3dcb1 0%, transparent 46%), radial-gradient(ellipse at 25% 52%, #667ab5 0%, transparent 52%),
-      radial-gradient(ellipse at 90% 18%, #369889 0%, transparent 48%), linear-gradient(145deg, #123f38, #467f72 48%, #a8c9ad);
-
-    .artBg {
-      z-index: 0;
-    }
-
-    .artBrand {
-      position: relative;
-      z-index: 1;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      color: #fff;
-
-      .artLogo {
-        width: 44px;
-        height: 44px;
-        line-height: 0;
-
-        :deep(svg) {
-          display: block;
-          width: 100%;
-          height: 100%;
-        }
-
-        :deep(path) {
-          fill: #fff;
-        }
-      }
-
-      .artName {
-        font-size: 30px;
-        font-weight: 600;
-        letter-spacing: 0.4px;
-      }
-    }
-  }
-
   @media (max-width: 700px) {
     grid-template-columns: 1fr;
 
@@ -286,9 +224,6 @@ async function completeSetup() {
       padding: 32px 20px;
     }
 
-    .artPanel {
-      display: none;
-    }
   }
 }
 </style>

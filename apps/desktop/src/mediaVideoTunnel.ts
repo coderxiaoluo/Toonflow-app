@@ -5,6 +5,7 @@ import type { Socket } from "node:net";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import * as timers from "node:timers/promises";
 import { gunzipSync } from "node:zlib";
 import { lstat, mkdir, open, readFile, realpath, stat, writeAtomic } from "@toonflow/file";
 
@@ -191,9 +192,59 @@ function videoMime(header: Buffer) {
   throw new Error("无法识别本地视频格式，仅支持 MP4、MOV、WebM、MKV、AVI");
 }
 
+async function waitForPublicVideo(url: string, size: number, samples: { start: number; bytes: Buffer }[], signal: AbortSignal) {
+  const readinessSignal = AbortSignal.any([signal, AbortSignal.timeout(60000)]);
+  let lastError: unknown;
+  while (!readinessSignal.aborted) {
+    try {
+      const requestSignal = AbortSignal.any([readinessSignal, AbortSignal.timeout(10000)]);
+      const head = await fetch(url, { method: "HEAD", redirect: "error", signal: requestSignal });
+      if (head.status !== 200 || head.headers.get("content-type")?.split(";")[0].trim() !== "video/mp4"
+        || head.headers.get("content-length") !== String(size)) throw new Error("公网视频响应类型或长度不正确");
+      for (const sample of samples) {
+        const end = sample.start + sample.bytes.length - 1;
+        const response = await fetch(url, {
+          headers: { Range: `bytes=${sample.start}-${end}`, "Accept-Encoding": "identity" },
+          redirect: "error", signal: requestSignal,
+        });
+        try {
+          if (response.status !== 206 || response.headers.get("content-range") !== `bytes ${sample.start}-${end}/${size}`
+            || response.headers.get("content-type")?.split(";")[0].trim() !== "video/mp4"
+            || response.headers.get("content-length") !== String(sample.bytes.length) || !response.body) {
+            throw new Error("公网视频不支持正确的分段下载");
+          }
+          const reader = response.body.getReader();
+          try {
+            let offset = 0;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (offset + value.length > sample.bytes.length
+                || !sample.bytes.subarray(offset, offset + value.length).equals(value)) throw new Error("公网视频内容与本地文件不一致");
+              offset += value.length;
+            }
+            if (offset !== sample.bytes.length) throw new Error("公网视频分段下载不完整");
+          } finally {
+            await reader.cancel().catch(() => {});
+            reader.releaseLock();
+          }
+        } finally { await response.body?.cancel().catch(() => {}); }
+      }
+      readinessSignal.throwIfAborted();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (readinessSignal.aborted) break;
+      await timers.setTimeout(2000, undefined, { signal: readinessSignal }).catch(() => {});
+    }
+  }
+  signal.throwIfAborted();
+  throw new Error("参考视频临时公网链接在 60 秒内未能通过 MP4 头尾分段读取校验，已停止提交生成。请检查网络或使用稳定的公网 MP4 直链。", { cause: lastError });
+}
+
 export function createMediaVideoTunnel(dataDirectory: string) {
   const active = new Set<() => Promise<void>>();
-  const createTunnel = async (workspaceDirectory: string, relativePath: string, signal?: AbortSignal) => {
+  const createTunnel = async (workspaceDirectory: string, relativePath: string, signal?: AbortSignal, report?: (message: string) => void) => {
     signal?.throwIfAborted();
     if (!relativePath || isAbsolute(relativePath) || relativePath.includes(":")) throw new Error("视频必须使用工作区相对路径");
     const root = await realpath(workspaceDirectory);
@@ -209,6 +260,9 @@ export function createMediaVideoTunnel(dataDirectory: string) {
     let child: ChildProcess | undefined;
     let stopping: Promise<void> | undefined;
     let lifetime: ReturnType<typeof setTimeout> | undefined;
+    let publicReady = false;
+    let remoteRequests = 0;
+    let completedReads = 0;
     const token = randomBytes(32).toString("hex");
     const server = createServer();
     const onAbort = () => { void stop().catch(error => console.warn("视频隧道关闭失败", error)); };
@@ -257,10 +311,12 @@ export function createMediaVideoTunnel(dataDirectory: string) {
       const header = Buffer.alloc(Math.min(4096, info.size));
       await handle.read(header, 0, header.length, 0);
       const mime = videoMime(header);
+      if (mime !== "video/mp4") throw new Error("本地参考视频须为 MP4，请先转换视频格式后再提交；仅修改文件后缀无效");
+      const videoPath = `/${token}/reference.mp4`;
       const executable = await cloudflaredPath(dataDirectory, controller.signal);
       controller.signal.throwIfAborted();
       server.on("request", (request, response) => {
-        if (controller.signal.aborted || request.url !== `/${token}`) return void response.writeHead(404).end();
+        if (controller.signal.aborted || request.url !== videoPath) return void response.writeHead(404).end();
         if (request.method !== "GET" && request.method !== "HEAD") return void response.writeHead(405, { Allow: "GET, HEAD" }).end();
         const range = rangeHeader(request.headers.range, info.size);
         if (range === null) return void response.writeHead(416, { "Content-Range": `bytes */${info.size}` }).end();
@@ -272,9 +328,16 @@ export function createMediaVideoTunnel(dataDirectory: string) {
           ...(range ? { "Content-Range": `bytes ${start}-${end}/${info.size}` } : {}),
         });
         if (request.method === "HEAD") return void response.end();
+        const remote = publicReady;
+        if (remote && remoteRequests++ === 0) report?.("观察到公网 GET 请求（排除本机自检）；尚不能确认请求方身份或视频解析成功");
         const stream = handle.createReadStream({ start, end, autoClose: false });
         streams.add(stream);
-        const transfer = pipeline(stream, response).catch(() => { response.destroy(); }).finally(() => {
+        const transfer = pipeline(stream, response).then(() => {
+          if (remote && completedReads++ < 4) report?.(`公网响应发送完成：bytes ${start}-${end}/${info.size}${!range ? "（完整文件）" : "（分段）"}；不等于供应商已成功解析`);
+        }).catch(() => {
+          if (remote && remoteRequests <= 4) report?.("公网视频传输中断，未确认本次读取完成");
+          response.destroy();
+        }).finally(() => {
           streams.delete(stream);
           transfers.delete(transfer);
         });
@@ -332,7 +395,19 @@ export function createMediaVideoTunnel(dataDirectory: string) {
       tunnelProcess.stdout?.resume();
       tunnelProcess.stderr?.resume();
       controller.signal.throwIfAborted();
-      return { url: `${address}/${token}`, stop };
+      const url = `${address}${videoPath}`;
+      const samples = [];
+      // ACT: 只读取头尾各 4 KB，验证公网就绪与 Range seek；不能保证供应商网络可达或媒体编码受支持。
+      for (const start of [...new Set([0, Math.max(0, info.size - 4096)])]) {
+        const bytes = Buffer.alloc(Math.min(4096, info.size - start));
+        const read = await handle.read(bytes, 0, bytes.length, start);
+        if (read.bytesRead !== bytes.length) throw new Error("参考视频在公网校验前发生变化");
+        samples.push({ start, bytes });
+      }
+      await waitForPublicVideo(url, info.size, samples, controller.signal);
+      publicReady = true;
+      report?.(`公网自检通过：MP4 ${info.size} 字节，HEAD 和头尾 Range 内容一致；等待非自检远端读取`);
+      return { url, stop };
     } catch (error) {
       await stop();
       throw error;

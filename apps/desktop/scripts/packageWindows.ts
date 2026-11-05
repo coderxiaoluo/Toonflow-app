@@ -14,7 +14,7 @@ const projectDir = realpathSync(resolve(import.meta.dirname, "../../.."));
 process.chdir(projectDir);
 const nsisDir = resolve("build/desktop/nsis");
 const artifactDir = resolve(desktopConfig.build.artifactFolder);
-const outputFile = join(artifactDir, `toonflow-${desktopConfig.app.version}-Setup.exe`);
+const outputFile = join(artifactDir, "xiaobo-Setup.exe");
 const installerDir = resolve("apps/desktop/installer");
 const appIcon = resolve("packages/assets/logo.ico");
 const makensis = process.env.NSIS_PATH ?? "C:/Program Files (x86)/NSIS/makensis.exe";
@@ -41,7 +41,7 @@ mkdirSync(webViewDir, { recursive: true });
 const stagingDir = mkdtempSync(join(nsisDir, "payload"));
 const tarFile = join(stagingDir, "app.tar");
 const updateHelper = join(stagingDir, "updateHelper.exe");
-const stagedOutputFile = join(stagingDir, `toonflow-${desktopConfig.app.version}-Setup.exe`);
+const stagedOutputFile = join(stagingDir, "xiaobo-Setup.exe");
 try {
   const archive = await file(join(artifactDir, manifest.artifact.file)).arrayBuffer();
   await write(tarFile, Bun.zstdDecompressSync(archive));

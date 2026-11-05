@@ -78,7 +78,7 @@ jobs:
 
           const files = readdirSync("artifacts");
           const version = process.env.releaseVersion;
-          const installer = `toonflow-${version}-Setup.exe`;
+          const installer = "xiaobo-Setup.exe";
           const manifest = "stable-win-x64-update.json";
           if (!files.includes(installer) || !files.includes(manifest) || !files.some(name => name.endsWith(".tar.zst"))) {
             throw new Error("缺少 Windows 安装包、更新清单或完整更新包，停止发布。");

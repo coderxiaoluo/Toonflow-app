@@ -17,6 +17,7 @@ export type NodeGenerationTask = {
   state: "submitting" | NonNullable<NodeMediaTaskStatus["state"]>;
   resumable?: boolean;
   providerData?: unknown;
+  diagnostics?: string[];
   recoveryData?: unknown;
   applied?: boolean;
 };
@@ -83,11 +84,12 @@ export function useNodeGeneration(outputs: Readonly<Ref<NodeOutputs>>, cancel: (
         checkTask(task, context);
         if (value.nodeId && value.nodeId !== id) throw new Error("生成任务不属于当前节点");
         if (value.canvasPath && value.canvasPath !== task.canvasPath) throw new Error("生成任务的原画布归属不一致");
-        const before = JSON.stringify([task.state, task.resumable, task.providerData]);
+        const before = JSON.stringify([task.state, task.resumable, task.providerData, task.diagnostics]);
         if (value.state) task.state = value.state;
         if (value.resumable !== undefined) task.resumable = value.resumable;
         if (value.providerData !== undefined) task.providerData = value.providerData;
-        if (before !== JSON.stringify([task.state, task.resumable, task.providerData])) {
+        if (value.diagnostics !== undefined) task.diagnostics = value.diagnostics;
+        if (before !== JSON.stringify([task.state, task.resumable, task.providerData, task.diagnostics])) {
           const current = getPersistence?.();
           if (!current) throw new Error("画布已关闭，无法保存任务状态");
           await current.save(signal);
@@ -240,5 +242,6 @@ export function useNodeGeneration(outputs: Readonly<Ref<NodeOutputs>>, cancel: (
   }, { deep: true, flush: "sync" });
   onScopeDispose(() => lifetime.abort());
 
-  return { generating, pendingRecovery, cancelling, run, generate, resume, cancel: cancelGeneration };
+  const diagnostics = computed(() => savedData.value.mediaTask?.diagnostics ?? []);
+  return { diagnostics, generating, pendingRecovery, cancelling, run, generate, resume, cancel: cancelGeneration };
 }
