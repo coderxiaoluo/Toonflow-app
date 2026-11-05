@@ -246,7 +246,7 @@ async function snapshot(task: MediaTask) {
   return { taskId, state, resumable: await resumable(task), nodeId, canvasPath, providerData: publicData(task), ...(result ? { result } : {}) };
 }
 
-async function execute(task: MediaTask, resume: boolean) {
+async function execute(task: MediaTask, resume: boolean, createVideoTunnel?: (directory: string, path: string, signal?: AbortSignal) => Promise<{ url: string; stop(): Promise<void> }>) {
   const { record } = task;
   try {
     const files = await generateMedia(record.cwd, record.mediaType!, record.request!, task.controller!.signal, {
@@ -256,7 +256,7 @@ async function execute(task: MediaTask, resume: boolean) {
         Object.assign(record.checkpoint, patch);
         await persist(task);
       }),
-    });
+    }, createVideoTunnel);
     await locked(task.key, async () => {
       if (record.state !== "running") return;
       record.state = "succeeded";
@@ -288,7 +288,7 @@ async function execute(task: MediaTask, resume: boolean) {
   }
 }
 
-async function launch(task: MediaTask, resume: boolean, exclusive = false) {
+async function launch(task: MediaTask, resume: boolean, exclusive = false, createVideoTunnel?: Parameters<typeof generateMedia>[5]) {
   if (task.active) return;
   if (activeCount >= 1000) invalid("生成任务过多，请稍后重试", 429);
   task.active = true;
@@ -309,10 +309,10 @@ async function launch(task: MediaTask, resume: boolean, exclusive = false) {
     activeCount--;
     throw cause;
   }
-  void execute(task, resume);
+  void execute(task, resume, createVideoTunnel);
 }
 
-export async function start(cwd: string, taskId: string, mediaType: "image" | "video" | "audio", request: MediaGenerationRequest, owner: TaskOwner = {}) {
+export async function start(cwd: string, taskId: string, mediaType: "image" | "video" | "audio", request: MediaGenerationRequest, owner: TaskOwner = {}, createVideoTunnel?: Parameters<typeof generateMedia>[5]) {
   cwd = await realpath(cwd);
   const key = taskPath(cwd, taskId);
   const parsed = requestSchemas[mediaType].parse(request);
@@ -335,7 +335,7 @@ export async function start(cwd: string, taskId: string, mediaType: "image" | "v
       version: 1, taskId, cwd, mediaType, request: parsed, ...owner, state: "running", createdAt: now, updatedAt: now, checkpoint: {},
     } };
     tasks.set(key, task);
-    try { await launch(task, false, true); }
+    try { await launch(task, false, true, createVideoTunnel); }
     catch (cause) { tasks.delete(key); throw cause; }
     return snapshot(task);
   });
@@ -384,6 +384,7 @@ export async function cancel(cwd: string, taskIds: string[]) {
       task.record.result = error<GeneratedMedia[]>("生成已取消", null, 499);
       // 取消先落盘；包括尚未收到提交的 ID，防止乱序请求稍后创建付费任务。
       await persist(task, exclusive);
+      task.controller?.abort(new DOMException("生成已取消", "AbortError"));
     });
   }));
 }

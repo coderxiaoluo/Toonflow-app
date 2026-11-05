@@ -87,7 +87,10 @@ function messageOf(value: unknown, status: number) {
 }
 
 async function requestJson(context: ArkThis, path: string, body?: unknown) {
-  const url = volcengineEndpoint(context.id === "developCc" ? "https://video.develop.cc" : apiBase(context.config), path);
+  const base = context.id === "developCc"
+    ? path === "/api/v1/account/balance" ? "https://xapi-tool.develop.cc" : "https://video.develop.cc"
+    : apiBase(context.config);
+  const url = volcengineEndpoint(base, path);
   let response: Response;
   try {
     response = await context.tool.fetch(url, {
@@ -275,9 +278,10 @@ export async function generateVolcengineVideo(this: ArkThis, request: Referenced
   const modifyingVideo = operation === "edit" || operation === "extend";
   let sourceVideo: MediaInput | undefined;
   if (modifyingVideo) {
-    const source = request.other?.sourceVideoUrl;
+    const source = typeof request.other?.sourceVideoUrl === "string" && request.other.sourceVideoUrl.trim()
+      ? request.other.sourceVideoUrl : request.videos?.length === 1 && request.videos[0]?.type === "url" ? request.videos[0].url : undefined;
     sourceVideo = { type: "url", url: validateVolcengineVideoUrl(source) };
-    if (request.videos?.length) fail("编辑或延长只允许一段原视频，请移除节点连接的参考视频，使用原视频直链");
+    if (request.videos?.length && (request.videos.length !== 1 || request.videos[0]?.type !== "url" || request.videos[0].url !== sourceVideo.url)) fail("编辑或延长只允许一段原视频，请使用一个视频节点或公网直链");
     if (request.firstFrame || request.lastFrame) fail("编辑或延长不支持首尾帧，请使用混合参考模式");
   }
   const durationMap = model?.durationResolutionMap ?? [];

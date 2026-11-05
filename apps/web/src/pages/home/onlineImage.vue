@@ -7,16 +7,16 @@
       </div>
       <el-button text @click="emit('openSettings')">模型设置</el-button>
     </header>
-    <el-radio-group v-model="mediaType" class="mediaTabs" aria-label="生成类型" :disabled="generating">
+    <el-radio-group v-model="mediaType" class="mediaTabs" aria-label="生成类型">
       <el-radio-button value="image">图片</el-radio-button>
       <el-radio-button value="video">视频</el-radio-button>
     </el-radio-group>
     <div class="studio">
       <form class="controls" :aria-busy="generating" @submit.prevent="submit">
-        <label class="field">
+        <div class="field promptField" role="group" aria-label="提示词">
           <span>提示词</span>
-          <el-mention ref="promptInput" v-model="prompt" :options="mentionOptions" name="prompt" autocomplete="off" type="textarea" :autosize="{ minRows: 10, maxRows: 22 }" resize="vertical" maxlength="20000" placeholder="输入提示词，输入 @ 引用已添加的素材…" aria-label="提示词" :disabled="generating" />
-        </label>
+          <richPromptInput ref="promptInput" v-model="promptModel" v-model:text="prompt" :references="promptReferences" expandable placeholder="描述你想生成的内容，输入 @ 引用素材" />
+        </div>
         <div class="field">
           <span>参考图片（{{ imageSlots.length }}/{{ referenceLimits.image }}）</span>
           <div class="references">
@@ -40,47 +40,52 @@
         <template v-if="mediaType === 'video'">
           <label v-if="supportsEditing" class="field">
             <span>视频操作</span>
-            <el-select v-model="videoOperation" :disabled="generating" aria-label="视频操作">
+            <el-select v-model="videoOperation" aria-label="视频操作">
               <el-option label="视频生成" value="generate" />
               <el-option label="视频编辑" value="edit" />
               <el-option label="视频延长" value="extend" />
             </el-select>
           </label>
           <template v-if="modifyingVideo">
-            <label class="field">
-              <span>原视频公网直链（4–30 秒）</span>
-              <el-input v-model="sourceVideoUrl" :disabled="generating || videoUploading" placeholder="上传本地视频或粘贴 https://…/source.mp4" aria-label="原视频公网直链" />
-              <el-button :loading="videoUploading" :disabled="generating || videoUploading" @click="pickVideo(true)">上传原视频到 Litterbox</el-button>
-            </label>
+            <div class="field videoDropZone" tabindex="0" role="group" aria-label="原视频，支持拖入或粘贴视频文件" @dragover.prevent @drop.prevent.stop="dropVideo($event, true)" @paste="pasteVideo($event, true)">
+              <span>原视频（4–30 秒）</span>
+              <span class="videoDropHint">拖入、粘贴或选择视频文件，最大 100 MB</span>
+              <div v-if="sourceVideoFile" class="referenceRow">
+                <video :src="assetUrl(sourceVideoFile.path)" aria-label="原视频" controls preload="metadata" />
+                <el-button :disabled="generating || videoUploading" @click="sourceVideoFile = undefined">移除</el-button>
+              </div>
+              <el-button :loading="videoUploading" :disabled="generating || videoUploading" @click="pickVideo(true)">选择原视频</el-button>
+            </div>
             <p class="formMessage">{{ videoOperation === 'edit' ? '提示词描述要编辑的内容，成片时长与原视频一致。' : '提示词描述向前或向后延长；返回的成片仅包含新增片段。' }}比例跟随原视频；自动时长先按 30 秒预扣，完成后按实际时长结算。</p>
             <label v-if="videoOperation === 'extend'" class="field">
               <span>新增时长</span>
-              <el-select v-model="extensionDuration" :disabled="generating" aria-label="新增时长">
+              <el-select v-model="extensionDuration" aria-label="新增时长">
                 <el-option label="自动决定" :value="-1" />
                 <el-option v-for="item in 27" :key="item" :label="`${item + 3} 秒`" :value="item + 3" />
               </el-select>
             </label>
           </template>
-          <div v-else-if="referenceLimits.video" class="field">
-            <span>参考视频（{{ videoUrls.length }}/{{ referenceLimits.video }}）</span>
-            <div v-for="(_, index) in videoUrls" :key="index" class="referenceRow">
-              <el-input v-model="videoUrls[index]" :disabled="generating" :aria-label="`视频${index + 1}公网直链`" :placeholder="`视频${index + 1}：https://…/video.mp4`" />
-              <el-button :disabled="generating" aria-label="移除参考视频" @click="videoUrls.splice(index, 1)">移除</el-button>
+          <div v-else-if="referenceLimits.video" class="field videoDropZone" tabindex="0" role="group" aria-label="参考视频，支持拖入或粘贴视频文件" @dragover.prevent @drop.prevent.stop="dropVideo($event, false)" @paste="pasteVideo($event, false)">
+            <span>参考视频（{{ videoFiles.length }}/{{ referenceLimits.video }}）</span>
+            <span class="videoDropHint">拖入、粘贴或选择视频文件，最大 100 MB</span>
+            <div v-for="(file, index) in videoFiles" :key="file.path" class="referenceRow">
+              <span>视频{{ index + 1 }}</span>
+              <video :src="assetUrl(file.path)" :aria-label="`视频${index + 1}`" controls preload="metadata" />
+              <el-button :disabled="generating || videoUploading" aria-label="移除参考视频" @click="videoFiles.splice(index, 1)">移除</el-button>
             </div>
-            <el-button :disabled="generating || videoUrls.length >= referenceLimits.video" @click="videoUrls.push('')">添加视频直链</el-button>
-            <el-button :loading="videoUploading" :disabled="generating || videoUploading || videoUrls.length >= referenceLimits.video" @click="pickVideo(false)">上传本地参考视频</el-button>
+            <el-button :loading="videoUploading" :disabled="generating || videoUploading || videoFiles.length >= referenceLimits.video" @click="pickVideo(false)">选择参考视频</el-button>
           </div>
-          <p class="formMessage">本地视频将上传至第三方 Litterbox，临时链接有效约 24 小时，无需存储桶。请勿上传敏感素材；链接过期后需重新上传。</p>
-          <input ref="videoInput" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" hidden aria-label="上传视频到 Litterbox" :disabled="generating || videoUploading" @change="selectVideo" />
+          <p class="formMessage">视频保存在本机，生成时经 Cloudflare 临时共享，请保持电脑联网。</p>
+          <input ref="videoInput" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" hidden aria-label="选择本地视频" :disabled="generating || videoUploading" @change="selectVideo" />
           <div v-if="referenceLimits.audio" class="field">
             <span>参考音频（{{ audioSlots.length }}/{{ referenceLimits.audio }}）</span>
             <div v-for="(item, index) in audioSlots" :key="item.preview" class="referenceRow">
               <span>音频{{ index + 1 }}{{ item.uploading ? ' · 上传中…' : '' }}</span>
               <audio :src="item.preview" controls preload="metadata" />
-              <el-button :disabled="generating" @click="removeAudio(index)">移除</el-button>
+              <el-button @click="removeAudio(index)">移除</el-button>
             </div>
             <el-button :disabled="generating || audioSlots.length >= referenceLimits.audio" @click="audioInput?.click()">添加参考音频</el-button>
-            <input ref="audioInput" type="file" accept="audio/*" hidden aria-label="上传参考音频" :disabled="generating" @change="selectAudio" />
+            <input ref="audioInput" type="file" accept="audio/*" hidden aria-label="上传参考音频" @change="selectAudio" />
           </div>
         </template>
         <div class="options">
@@ -113,7 +118,7 @@
           </label>
           <label v-if="mediaType === 'image'" class="field">
             <span>数量</span>
-            <el-select v-model="count" :disabled="generating" aria-label="生成数量">
+            <el-select v-model="count" aria-label="生成数量">
               <el-option v-for="item in counts" :key="item" :label="`×${item}`" :value="item" />
             </el-select>
           </label>
@@ -131,29 +136,25 @@
         <p v-if="modelsError" class="formMessage" role="alert">{{ modelsError }} <el-button text @click="loadModels">重试</el-button></p>
         <p v-else-if="!modelsLoading && !providers.length" class="formMessage">还没有可用的{{ mediaLabel }}模型。<el-button text @click="emit('openSettings')">去设置里添加</el-button></p>
         <p v-if="formError" class="formMessage" role="alert">{{ formError }}</p>
-        <el-button v-if="generating" class="submitButton" nativeType="button" @click="cancel">停止生成</el-button>
-        <el-button v-else class="submitButton" type="primary" nativeType="submit">生成</el-button>
+        <p class="formMessage">提交后后端可能按队列顺序生成；此页面关闭或刷新后不会恢复任务。</p>
+        <el-button class="submitButton" type="primary" nativeType="submit">生成</el-button>
       </form>
-      <section class="stage" :aria-busy="generating" aria-label="生成结果">
-        <div v-if="generating" class="stageState" role="status">
-          <icon-loader-2 class="isLoading" :size="28" aria-hidden="true" />
-          <span>正在生成…</span>
-        </div>
-        <template v-else-if="result && (result.mediaType ?? 'image') === mediaType">
-          <template v-if="result.mediaType === 'video'">
-            <video class="stageVideo" :src="assetUrl(result.images[0]?.path || '')" :aria-label="result.prompt" controls preload="metadata" />
-            <el-button text @click="openDetail(result)">查看生成设置</el-button>
+      <section class="stage taskList" aria-label="本次会话生成任务">
+        <article v-for="task in tasks" :key="task.id" class="taskCard">
+          <header class="taskHeader">
+            <div><strong>{{ task.mediaType === 'video' ? '视频' : '图片' }} · <span translate="no">{{ task.modelLabel }}</span></strong><time>{{ new Date(task.createdAt).toLocaleString() }}</time></div>
+            <el-button v-if="task.status === 'queued' || task.status === 'running'" text type="danger" @click="cancel(task)">停止</el-button>
+          </header>
+          <p class="taskPrompt">{{ task.prompt }}</p>
+          <p class="taskStatus" role="status">{{ task.status === 'queued' ? '已提交，排队或生成中，等待返回结果' : task.status === 'running' ? '正在生成' : task.status === 'succeeded' ? '已完成' : task.status === 'failed' ? '生成失败' : '已停止' }}</p>
+          <template v-if="task.result">
+            <video v-if="task.mediaType === 'video'" class="stageVideo" :src="assetUrl(task.result.images[0]?.path || '')" :aria-label="task.prompt" controls preload="metadata" />
+            <button v-else type="button" class="stageImage" aria-label="查看生成结果" @click="openDetail(task.result)"><img :src="assetUrl(task.result.images[0]?.path || '')" :alt="task.prompt" width="720" height="720" loading="lazy" /></button>
+            <div class="taskActions"><el-button text @click="openDetail(task.result)">查看详情</el-button><el-button text @click="downloadImage(task.result.images[0]?.path || '')">下载</el-button></div>
           </template>
-          <button v-else type="button" class="stageImage" aria-label="查看生成结果" @click="openDetail(result)">
-            <img :src="assetUrl(result.images[0]?.path || '')" :alt="result.prompt" width="720" height="720" fetchpriority="high" />
-          </button>
-          <div v-if="result.mediaType !== 'video' && result.images.length > 1" class="stageThumbs">
-            <button v-for="(image, index) in result.images" :key="image.path" type="button" :aria-label="`查看第 ${index + 1} 张`" @click="openDetail(result)">
-              <img :src="assetUrl(image.path)" alt="" width="64" height="64" />
-            </button>
-          </div>
-        </template>
-        <div v-else class="stageState">生成的{{ mediaLabel }}会显示在这里</div>
+          <p v-if="task.error" class="formMessage" role="alert">{{ task.error }}</p>
+        </article>
+        <div v-if="!tasks.length" class="stageState">提交后任务会显示在这里。后端可能按队列顺序生成。</div>
       </section>
     </div>
     <section class="history" aria-labelledby="onlineHistoryTitle">
@@ -219,7 +220,10 @@
 <script setup lang="ts">
 import axios from "axios";
 import { computed, onUnmounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox, type MentionInstance } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
+import richPromptInput from "@toonflow/node-shared/promptInput";
+import type { AnyTagProps } from "x-sender";
+import { getPromptText } from "@toonflow/node-shared/promptText";
 import { IconLoader2, IconPlus, IconTrash, IconX } from "@tabler/icons-vue";
 
 type MediaType = "image" | "video";
@@ -240,6 +244,7 @@ type MediaModel = {
   mode?: (string | string[])[];
 };
 type ImageFile = { path: string; mimeType: string };
+type VideoFile = { path: string; mimeType: string };
 type OnlineRecord = {
   id: string;
   createdAt: number;
@@ -258,23 +263,25 @@ type OnlineRecord = {
   images: ImageFile[];
   references: ImageFile[];
   audios?: ImageFile[];
+  videos?: VideoFile[];
   videoUrls?: string[];
   referenceOrder?: { type: "image" | "video" | "audio"; index: number }[];
 };
 type ReferenceSlot = { preview: string; path?: string; mimeType?: string; uploading: boolean };
+type GenerationTask = { id: string; mediaType: MediaType; modelLabel: string; prompt: string; parameters: Record<string, unknown>; controller: AbortController; status: "queued" | "running" | "succeeded" | "failed" | "cancelled"; createdAt: number; result?: OnlineRecord; error?: string };
 type ApiResponse<T> = { code: number; data: T; message?: string };
 
 const props = defineProps<{ active: boolean }>();
 const emit = defineEmits<{ openSettings: [] }>();
 const audioSlots = ref<ReferenceSlot[]>([]);
 const audioInput = ref<HTMLInputElement>();
-const videoUrls = ref<string[]>([]);
+const videoFiles = ref<VideoFile[]>([]);
 const videoInput = ref<HTMLInputElement>();
 const videoUploading = ref(false);
 let videoUploadController: AbortController | undefined;
 let uploadAsSource = false;
 const videoOperation = ref("generate");
-const sourceVideoUrl = ref("");
+const sourceVideoFile = ref<VideoFile>();
 const extensionDuration = ref(-1);
 const counts = [1, 2, 3, 4];
 const pageSize = 24;
@@ -283,7 +290,12 @@ const extensions: Record<string, string> = {
   "image/avif": "avif", "image/bmp": "bmp", "image/tiff": "tiff",
 };
 const prompt = ref("");
-const promptInput = ref<MentionInstance>();
+const promptInput = ref<InstanceType<typeof richPromptInput>>();
+const promptModel = ref<AnyTagProps[][]>([]);
+watch(prompt, value => {
+  // 应用归档时重建文本；编辑器输出与模型相同时保留标签和撤销状态。
+  if (value !== getPromptText(promptModel.value)) promptModel.value = value.split("\n").map(text => [{ type: "Write", text }]);
+});
 const formError = ref("");
 const formErrorKind = ref<"prompt" | "upload" | "model" | "generate" | "">("");
 const models = ref<MediaModel[]>([]);
@@ -297,7 +309,6 @@ const size = ref("");
 const resolution = ref("");
 const duration = ref<number>();
 const generateAudio = ref(false);
-const other = ref<Record<string, unknown>>({});
 const selectedResolution = computed({
   get: () => mediaType.value === "video" ? resolution.value : size.value,
   set: value => { if (mediaType.value === "video") resolution.value = value; else size.value = value; },
@@ -309,6 +320,7 @@ const dragIndex = ref(-1);
 const fileInput = ref<HTMLInputElement>();
 const pickIndex = ref(0);
 const generating = ref(false);
+const tasks = ref<GenerationTask[]>([]);
 const result = ref<OnlineRecord>();
 const history = ref<OnlineRecord[]>([]);
 const historyLoading = ref(false);
@@ -322,7 +334,6 @@ const detailVisible = computed({
   get: () => !!detail.value,
   set: visible => { if (!visible) detail.value = undefined; },
 });
-let generationController: AbortController | undefined;
 let inputDirectoryReady = false;
 let historyVersion = 0;
 let disposed = false;
@@ -358,11 +369,20 @@ const referenceLimits = computed(() => {
 const imageSlots = computed(() => slots.value.filter((slot): slot is ReferenceSlot => !!slot));
 const referenceLabels = computed(() => Array.from({ length: Math.min(referenceLimits.value.image, Math.max(3, slots.value.length + (slots.value.every(Boolean) ? 1 : 0))) }, (_, index) => `图片${index + 1}`));
 const referencesAllowed = computed(() => referenceLimits.value.image > 0);
-const mentionOptions = computed(() => [
-  ...slots.value.flatMap((slot, index) => slot?.path ? [{ value: `图片${index + 1}` }] : []),
+const promptReferences = computed(() => [
+  ...slots.value.flatMap((slot, index) => slot?.path ? [{
+    id: `image:${slot.path}`, name: `图片${index + 1}`, label: `图片${index + 1}`,
+    value: `@图片${index + 1}`, avatar: slot.preview, previewable: true,
+  }] : []),
   ...(mediaType.value === "video" ? [
-    ...(!modifyingVideo.value ? videoUrls.value.flatMap((url, index) => url.trim() ? [{ value: `视频${index + 1}` }] : []) : []),
-    ...audioSlots.value.flatMap((slot, index) => slot.path ? [{ value: `音频${index + 1}` }] : []),
+    ...(modifyingVideo.value ? sourceVideoFile.value ? [sourceVideoFile.value] : [] : videoFiles.value).map((file, index) => ({
+      id: `video:${file.path}`, name: `视频${index + 1}`, label: `视频${index + 1}`,
+      value: `@视频${index + 1}`, videoUrl: assetUrl(file.path), previewable: true,
+    })),
+    ...audioSlots.value.flatMap((slot, index) => slot.path ? [{
+      id: `audio:${slot.path}`, name: `音频${index + 1}`, label: `音频${index + 1}`,
+      value: `@音频${index + 1}`, previewable: false,
+    }] : []),
   ] : []),
 ]);
 const uploading = computed(() => slots.value.some(slot => slot?.uploading) || audioSlots.value.some(slot => slot.uploading));
@@ -370,7 +390,7 @@ const filteredHistory = computed(() => history.value.filter(item => (item.mediaT
 const visibleHistory = computed(() => filteredHistory.value.slice(0, historyVisible.value));
 const allSelected = computed(() => filteredHistory.value.length > 0 && filteredHistory.value.every(item => selectedIds.value.includes(item.id)));
 
-watch(currentModel, () => { other.value = {}; syncSize(); }, { flush: "sync" });
+watch(currentModel, syncSize, { flush: "sync" });
 watch(duration, syncSize, { flush: "sync" });
 watch(mediaType, () => {
   exitManage();
@@ -392,7 +412,7 @@ watch(() => props.active, active => {
 }, { immediate: true });
 onUnmounted(() => {
   disposed = true;
-  generationController?.abort();
+  tasks.value.forEach(task => task.controller.abort());
   videoUploadController?.abort();
   slots.value.forEach(clearPreview);
   audioSlots.value.forEach(clearPreview);
@@ -448,7 +468,8 @@ async function loadHistory() {
     const { data } = await axios.get<ApiResponse<OnlineRecord[]>>("/api/onlineImage/history");
     if (disposed || version !== historyVersion) return;
     if (data.code !== 200 || !Array.isArray(data.data)) throw new Error(data.message || "读取历史失败");
-    history.value = data.data;
+    const completedRecords = tasks.value.flatMap(task => task.status === "succeeded" && task.result ? [task.result] : []);
+    history.value = [...completedRecords, ...data.data].filter((item, index, records) => records.findIndex(record => record.id === item.id) === index);
     selectedIds.value = selectedIds.value.filter(id => filteredHistory.value.some(item => item.id === id));
     if (!filteredHistory.value.length) exitManage();
   } catch (error) {
@@ -503,7 +524,14 @@ function dropReference(index: number, event: DragEvent) {
 }
 
 function onPaste(event: ClipboardEvent) {
-  if (!props.active || generating.value || !referencesAllowed.value) return;
+  if (!props.active || generating.value || event.defaultPrevented) return;
+  const pastedVideo = [...(event.clipboardData?.files ?? [])].find(file => file.type.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.name));
+  if (mediaType.value === "video" && pastedVideo && (modifyingVideo.value || referenceLimits.value.video > 0)) {
+    event.preventDefault();
+    void uploadVideoFile(pastedVideo, modifyingVideo.value);
+    return;
+  }
+  if (!referencesAllowed.value) return;
   const target = event.target;
   if (target instanceof Element && (target.closest(".el-overlay") || target.closest("input, textarea, [contenteditable='true']"))) return;
   const file = [...(event.clipboardData?.files ?? [])].find(item => item.type.startsWith("image/"));
@@ -586,32 +614,60 @@ async function selectVideo(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = "";
-  if (!file || generating.value || videoUploading.value) return;
-  if (!/\.(mp4|mov|webm)$/i.test(file.name) || !file.size || file.size > 100 * 1024 * 1024) {
+  if (file) await uploadVideoFile(file, uploadAsSource);
+}
+
+function dropVideo(event: DragEvent, asSource: boolean) {
+  if (generating.value || videoUploading.value) return;
+  const files = [...(event.dataTransfer?.files ?? [])];
+  if (files.length > 1) return void ElMessage.warning("请一次添加一个视频");
+  if (files[0]) { void uploadVideoFile(files[0], asSource); return; }
+  ElMessage.warning("请选择或粘贴视频文件");
+}
+
+function pasteVideo(event: ClipboardEvent, asSource: boolean) {
+  const files = [...(event.clipboardData?.files ?? [])];
+  const target = event.target;
+  if (!files.length && target instanceof Element && target.closest("input, textarea, [contenteditable='true']")) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (files.length > 1) return void ElMessage.warning("请一次粘贴一个视频");
+  if (files[0]) void uploadVideoFile(files[0], asSource);
+  else ElMessage.warning("请选择或粘贴视频文件");
+}
+
+async function uploadVideoFile(file: File, asSource: boolean) {
+  if (generating.value || videoUploading.value) return;
+  const videoTypes: Record<string, string> = { mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm" };
+  const extension = /\.(mp4|mov|webm)$/i.exec(file.name)?.[1]?.toLowerCase()
+    ?? Object.keys(videoTypes).find(key => videoTypes[key] === file.type.split(";")[0]?.trim().toLowerCase());
+  if (!extension || !file.size || file.size > 100 * 1024 * 1024) {
     return void ElMessage.warning("请上传不超过 100 MB 的 MP4、MOV 或 WebM 视频");
   }
-  const asSource = uploadAsSource;
   const selectedModel = modelId.value;
   const selectedOperation = videoOperation.value;
   const selectedType = mediaType.value;
-  if (!asSource && videoUrls.value.length >= referenceLimits.value.video) return;
+  if (!asSource && videoFiles.value.length >= referenceLimits.value.video) return void ElMessage.warning("参考视频数量已达当前模型上限");
   const controller = new AbortController();
   videoUploadController = controller;
   videoUploading.value = true;
   try {
-    const { data } = await axios.post<ApiResponse<{ url: string; expiresAt: number }>>("/api/onlineImage/uploadVideo", file, {
-      headers: { "Content-Type": "application/octet-stream" }, signal: controller.signal,
+    await ensureInputDirectory();
+    if (disposed || controller.signal.aborted) return;
+    const path = `在线生图/input/ref${crypto.randomUUID()}.${extension}`;
+    await axios.put("/api/assets/save", file, {
+      params: { path }, headers: { "Content-Type": "application/octet-stream" }, signal: controller.signal,
     });
     if (disposed || controller.signal.aborted) return;
-    if (data.code !== 200 || !data.data?.url) throw new Error(data.message || "视频上传失败");
     if (selectedModel !== modelId.value || selectedOperation !== videoOperation.value || selectedType !== mediaType.value) {
       ElMessage.warning("视频已上传，但生成设置已切换，请在当前设置下重新选择视频");
       return;
     }
-    if (asSource) sourceVideoUrl.value = data.data.url;
-    else if (videoUrls.value.length < referenceLimits.value.video) videoUrls.value.push(data.data.url);
+    const video: VideoFile = { path, mimeType: videoTypes[extension]! };
+    if (asSource) sourceVideoFile.value = video;
+    else if (videoFiles.value.length < referenceLimits.value.video) videoFiles.value.push(video);
   } catch (error) {
-    if (!disposed && !controller.signal.aborted) ElMessage.error(requestError(error, "Litterbox 视频上传失败，请稍后重试"));
+    if (!disposed && !controller.signal.aborted) ElMessage.error(requestError(error, "视频保存失败，请稍后重试"));
   } finally {
     if (videoUploadController === controller) {
       videoUploadController = undefined;
@@ -620,8 +676,9 @@ async function selectVideo(event: Event) {
   }
 }
 
-function cancel() {
-  generationController?.abort();
+function cancel(task: GenerationTask) {
+  task.controller.abort();
+  task.status = "cancelled";
 }
 
 async function submit() {
@@ -630,7 +687,7 @@ async function submit() {
   if (!trimmed) {
     formErrorKind.value = "prompt";
     formError.value = "请输入提示词";
-    promptInput.value?.input?.focus();
+    document.querySelector<HTMLElement>(".controls .promptInput [contenteditable='true']")?.focus();
     return;
   }
   if (uploading.value || videoUploading.value) {
@@ -649,13 +706,13 @@ async function submit() {
   const images = slots.value.flatMap(slot => slot?.path && slot.mimeType ? [{ path: slot.path, mimeType: slot.mimeType }] : []);
   const type = mediaType.value;
   const audios = type === "video" ? audioSlots.value.flatMap(slot => slot.path && slot.mimeType ? [{ path: slot.path, mimeType: slot.mimeType }] : []) : [];
-  const videos = type === "video" && !modifyingVideo.value ? videoUrls.value.map(url => url.trim()) : [];
-  if (images.length > referenceLimits.value.image || audios.length > referenceLimits.value.audio || videos.length > referenceLimits.value.video) {
+  const videos = type === "video" ? modifyingVideo.value ? sourceVideoFile.value ? [sourceVideoFile.value] : [] : videoFiles.value : [];
+  if (images.length > referenceLimits.value.image || audios.length > referenceLimits.value.audio || (!modifyingVideo.value && videos.length > referenceLimits.value.video)) {
     formError.value = "参考素材数量超过当前模型上限，请移除多余素材。";
     return;
   }
-  if (videos.some(url => !/^https?:\/\//i.test(url)) || (modifyingVideo.value && !/^https?:\/\//i.test(sourceVideoUrl.value.trim()))) {
-    formError.value = "请填写可公开下载的视频 HTTP(S) 直链。";
+  if (modifyingVideo.value && !sourceVideoFile.value) {
+    formError.value = "请选择原视频文件。";
     return;
   }
   const referenceOrder: { type: "image" | "video" | "audio"; index: number }[] = [];
@@ -692,36 +749,35 @@ async function submit() {
     formError.value = "请按当前模型能力选择时长、分辨率和比例。";
     return;
   }
+  const requestBody = JSON.parse(JSON.stringify({
+    prompt: submittedPrompt, providerId: model.providerId, modelId: model.modelId, mediaType: type,
+    ...(ratio.value ? { ratio: ratio.value } : {}),
+    ...(type === "video" ? {
+      ...(resolution.value ? { resolution: resolution.value } : {}),
+      ...(duration.value !== undefined ? { duration: duration.value } : {}),
+      ...(model.audio !== undefined ? { generateAudio: generateAudio.value } : {}),
+      n: 1, mode: videoMode, audios, videos, referenceOrder,
+      other: supportsEditing.value ? { videoOperation: videoOperation.value, extensionDuration: extensionDuration.value } : {},
+    } : { size: size.value, n: count.value }),
+    ...(images.length ? { images } : {}),
+  })) as Record<string, unknown>;
   const controller = new AbortController();
-  generationController = controller;
-  generating.value = true;
+  tasks.value.unshift({ id: crypto.randomUUID(), mediaType: type, modelLabel: model.label, prompt: trimmed, parameters: structuredClone(requestBody), controller, status: "queued", createdAt: Date.now() });
+  // 后续异步更新使用响应式任务项，草稿不因其他任务运行而锁定。
+  const task = tasks.value[0]!;
   try {
-    const { data } = await axios.post<ApiResponse<OnlineRecord>>("/api/onlineImage/generate", {
-      prompt: submittedPrompt, providerId: model.providerId, modelId: model.modelId, mediaType: type,
-      ...(ratio.value ? { ratio: ratio.value } : {}),
-      ...(type === "video" ? {
-        ...(resolution.value ? { resolution: resolution.value } : {}),
-        ...(duration.value !== undefined ? { duration: duration.value } : {}),
-        ...(model.audio !== undefined ? { generateAudio: generateAudio.value } : {}),
-        n: 1, mode: videoMode, audios, videoUrls: videos, referenceOrder,
-        other: { ...other.value, ...(supportsEditing.value ? { videoOperation: videoOperation.value, ...(modifyingVideo.value ? { sourceVideoUrl: sourceVideoUrl.value.trim() } : {}), extensionDuration: extensionDuration.value } : {}) },
-      } : { size: size.value, n: count.value }),
-      ...(images.length ? { images } : {}),
-    }, { signal: controller.signal });
+    const { data } = await axios.post<ApiResponse<OnlineRecord>>("/api/onlineImage/generate", requestBody, { signal: controller.signal });
     if (controller.signal.aborted || disposed) return;
     if (data.code !== 200 || !data.data?.images?.length) throw new Error(data.message || "生成失败");
+    task.status = "succeeded";
+    task.result = data.data;
     result.value = data.data;
     historyVersion += 1;
     history.value = [data.data, ...history.value.filter(item => item.id !== data.data.id)];
   } catch (error) {
-    if (controller.signal.aborted || axios.isCancel(error)) return;
-    if (!disposed) {
-      formErrorKind.value = "generate";
-      formError.value = `${requestError(error, "生成失败")}，请调整提示词或模型后再试。`;
-    }
-  } finally {
-    if (generationController === controller) generationController = undefined;
-    generating.value = false;
+    if (controller.signal.aborted || axios.isCancel(error)) { task.status = "cancelled"; return; }
+    task.status = "failed";
+    task.error = requestError(error, "生成失败");
   }
 }
 
@@ -769,16 +825,17 @@ function applyRecord(record: OnlineRecord) {
     if (record.resolution && resolutionOptions.value.includes(record.resolution)) resolution.value = record.resolution;
     if (record.ratio && ratioOptions.value.includes(record.ratio)) ratio.value = record.ratio;
     if (model.audio === "optional") generateAudio.value = record.generateAudio ?? false;
-    other.value = { ...record.other };
   } else ElMessage.warning("原来的模型已不可用，请重新选择");
   slots.value.forEach(clearPreview);
   slots.value = (record.references ?? []).map(file => ({ preview: assetUrl(file.path), path: file.path, mimeType: file.mimeType, uploading: false }));
   while (slots.value.length < Math.min(3, referenceLimits.value.image)) slots.value.push(null);
   audioSlots.value.forEach(clearPreview);
   audioSlots.value = (record.audios ?? []).map(file => ({ preview: assetUrl(file.path), path: file.path, mimeType: file.mimeType, uploading: false }));
-  videoUrls.value = [...record.videoUrls ?? []];
   videoOperation.value = supportsEditing.value && ["edit", "extend"].includes(String(record.other?.videoOperation)) ? String(record.other?.videoOperation) : "generate";
-  sourceVideoUrl.value = typeof record.other?.sourceVideoUrl === "string" ? record.other.sourceVideoUrl : "";
+  const savedVideos = (record.videos ?? []).map(file => ({ path: file.path, mimeType: file.mimeType }));
+  videoFiles.value = modifyingVideo.value ? [] : savedVideos;
+  sourceVideoFile.value = modifyingVideo.value ? savedVideos[0] : undefined;
+  if (record.videoUrls?.length || typeof record.other?.sourceVideoUrl === "string") ElMessage.warning("旧记录的视频素材需要重新选择本地文件");
   extensionDuration.value = typeof record.other?.extensionDuration === "number" ? record.other.extensionDuration : -1;
   detail.value = undefined;
 }
@@ -922,6 +979,36 @@ onUnmounted(() => {
     }
   }
 
+  .promptField {
+    :deep(.promptInputWrap) { margin: 0; }
+    :deep(.promptInput:not(.expandedInput)) {
+      min-height: 200px;
+      padding: 16px;
+      border-radius: 14px;
+      border-color: var(--el-border-color-lighter);
+      background: var(--el-fill-color-extra-light);
+      font-size: 14px;
+      font-weight: 400;
+      line-height: 1.8;
+    }
+    :deep(.promptInput:not(.expandedInput):focus-within) {
+      background: var(--el-bg-color);
+      border-color: var(--el-color-primary);
+      box-shadow: 0 0 0 2px var(--el-color-primary-light-9);
+    }
+    :deep(.promptInput:not(.expandedInput) .chat-rich-text) { min-height: 166px !important; max-height: 360px !important; }
+    :deep(.promptInput:not(.expandedInput) [contenteditable="true"]) { min-height: 166px; }
+    :deep(.chat-placeholder-wrap) { font-size: 13px; font-weight: 400; line-height: 1.8; }
+    :deep(.expandButton) {
+      top: 10px;
+      right: 10px;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--el-fill-color-extra-light);
+    }
+  }
+
   .references {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -993,8 +1080,19 @@ onUnmounted(() => {
 
     .el-input { flex: 1; min-width: 0; }
     audio { flex: 1; width: 0; min-width: 0; height: 32px; }
+    video { flex: 1; width: 0; min-width: 0; max-height: 180px; border-radius: 8px; }
     .el-button { margin: 0; }
   }
+
+  .videoDropZone {
+    padding: 12px;
+    border: 1px dashed var(--el-border-color);
+    border-radius: 12px;
+    background: var(--el-fill-color-extra-light);
+    &:hover, &:focus-within { border-color: var(--el-color-primary); }
+    &:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
+  }
+  .videoDropHint { font-size: 12px; line-height: 1.6; font-weight: 400; }
 
   .options {
     display: grid;
@@ -1021,6 +1119,29 @@ onUnmounted(() => {
     padding: 16px;
     overflow: hidden;
   }
+
+  .taskList { align-items: stretch; justify-content: flex-start; gap: 16px; }
+  .taskCard {
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 12px;
+    background: var(--el-bg-color);
+    .stageVideo { width: 100%; max-height: 420px; border-radius: 8px; }
+    .stageImage { display: block; margin-inline: auto; }
+  }
+  .taskHeader {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    strong { font-size: 14px; overflow-wrap: anywhere; }
+    time { color: var(--el-text-color-secondary); font-size: 12px; }
+  }
+  .taskPrompt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
+  .taskStatus { color: var(--el-text-color-secondary); font-size: 12px; }
+  .taskActions { display: flex; gap: 8px; margin-top: 10px; }
 
   .stageState {
     display: flex;

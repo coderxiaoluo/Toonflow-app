@@ -266,7 +266,7 @@ function getGenerationInput(prompt: string): Omit<NodeVideoRequest, "directory">
     resolution: data.value.resolution || undefined,
     ratio: data.value.ratio,
     generateAudio: choice.audio === "optional" ? data.value.generateAudio : choice.audio,
-    other: Object.keys(data.value.other).length ? { ...data.value.other } : undefined,
+    other: Object.keys(data.value.other).length ? Object.fromEntries(Object.entries(data.value.other).filter(([key]) => key !== "sourceVideoUrl")) : undefined,
     outputDirectory: `assets/${id}`,
     images: frameMode.value ? undefined : images,
     firstFrame,
@@ -370,9 +370,7 @@ async function startGeneration() {
   if (!input.prompt) throw new Error("请输入生成提示词");
   if (choice.providerId === "developCc" && choice.modelId === "seedance-2.5"
     && ["edit", "extend"].includes(String(input.other?.videoOperation))) {
-    const source = input.other?.sourceVideoUrl;
-    if (typeof source !== "string" || !URL.canParse(source.trim()) || !/^https?:\/\//i.test(source.trim())) throw new Error("请在视频设置中填写原视频的公网直链");
-    if (input.videos?.length) throw new Error("编辑或延长请使用原视频公网直链，并移除节点连接的参考视频");
+    if (input.videos?.length !== 1) throw new Error("编辑或延长请连接一个工作区视频节点作为原视频");
     if (input.firstFrame || input.lastFrame) throw new Error("编辑或延长不支持首尾帧，请切换为混合参考模式");
   }
   if (refList.value.some(item => item.value === undefined)) throw new Error("引用节点暂无内容，请先补充引用内容");

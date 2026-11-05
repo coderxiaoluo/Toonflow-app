@@ -143,6 +143,8 @@ async function start() {
       // agentsRoot: resolve(PATHS.VIEWS_FOLDER, "../agents"),
       pluginRevision: hash,
     });
+    const { createMediaVideoTunnel } = await import("./mediaVideoTunnel");
+    const mediaVideoTunnel = createMediaVideoTunnel(dataDirectory);
     const { default: createDesktopConnection } = await import("./connection");
     const connection = desktopConnection = await createDesktopConnection(app, dataDirectory, resolve(PATHS.VIEWS_FOLDER, "../mcp/stdio.js"), (port, remote) => {
       deliverInstall = undefined;
@@ -312,6 +314,8 @@ async function start() {
     let isShowing = false;
     const updater = process.platform === "win32" ? createWindowsUpdater(PATHS.RESOURCES_FOLDER, Utils as unknown as Parameters<typeof createWindowsUpdater>[1]) : Updater;
     app.locals.desktop = {
+      ...app.locals.desktop,
+      createMediaVideoTunnel: mediaVideoTunnel,
       openUrl,
       showNotification: Utils.showNotification,
       showItemInFolder: Utils.showItemInFolder,
@@ -412,6 +416,7 @@ async function start() {
       mainWindow.on("close", closeIcons);
     }
     mainWindow.on("close", () => {
+      void mediaVideoTunnel.stopAll().catch(error => console.error("视频隧道关闭失败：", error));
       void connection.close().catch(error => console.error("设备连接关闭失败：", error));
       void closeBrowsers().catch(error => console.error("浏览器关闭失败：", error));
       isClosing = true;

@@ -10,6 +10,8 @@ import type { MediaGenerationRequest } from "@toonflow/tools-scaffold/runtime";
 export const onlineOutputDirectory = "在线生图";
 export const onlineReferencePath = /^在线生图\/input\/ref[0-9a-f-]{36}\.(png|jpe?g|webp|gif|avif|bmp|tiff)$/i;
 export const onlineReferenceMime = /^image\/(png|jpeg|webp|gif|avif|bmp|tiff)$/i;
+export const onlineVideoReferencePath = /^在线生图\/input\/ref[0-9a-f-]{36}\.(mp4|mov|webm)$/i;
+export const onlineVideoReferenceMime = /^video\/(mp4|quicktime|webm)$/i;
 export const onlineAudioReferencePath = /^在线生图\/input\/ref[0-9a-f-]{36}\.(mp3|wav|ogg|webm|flac|aac|m4a|opus|pcm)$/i;
 export const onlineAudioReferenceMime = /^audio\/(mpeg|wav|ogg|webm|flac|aac|mp4|opus|pcm)$/i;
 export const onlineOutputPath = /^在线生图\/(?:image[0-9a-f-]{36}\.(?:png|jpe?g|webp|gif|avif|bmp|tiff)|video[0-9a-f-]{36}\.(?:mp4|webm|mov|ogv))$/i;
@@ -32,6 +34,7 @@ export type OnlineImageRecord = {
   images: OnlineImageFile[];
   references: OnlineImageFile[];
   audios?: OnlineImageFile[];
+  videos?: OnlineImageFile[];
   videoUrls?: string[];
   referenceOrder?: MediaGenerationRequest["referenceOrder"];
   mode?: MediaGenerationRequest["mode"];
@@ -55,7 +58,7 @@ function fileOf(value: unknown, pathPattern: RegExp, mediaType = "image"): Onlin
   if (!value || typeof value !== "object") return;
   const file = value as OnlineImageFile;
   if (typeof file.path !== "string" || typeof file.mimeType !== "string" || !pathPattern.test(file.path)) return;
-  if (mediaType === "video" ? !/^video\/(mp4|webm|quicktime|ogg)$/i.test(file.mimeType) || !/\/video/.test(file.path)
+  if (mediaType === "video" ? !/^video\/(mp4|webm|quicktime|ogg)$/i.test(file.mimeType) || (pathPattern === onlineOutputPath && !/\/video/.test(file.path))
     : mediaType === "audio" ? !onlineAudioReferenceMime.test(file.mimeType)
       : !onlineReferenceMime.test(file.mimeType) || /\/video/.test(file.path)) return;
   return { path: file.path, mimeType: file.mimeType };
@@ -79,6 +82,8 @@ export function asOnlineImageRecord(value: unknown): OnlineImageRecord | undefin
   if (!images.length || images.length > 64 || images.some(item => !item) || references.length > 64 || references.some(item => !item)) return;
   const audios = record.audios === undefined ? [] : Array.isArray(record.audios) ? record.audios.map(item => fileOf(item, onlineAudioReferencePath, "audio")) : undefined;
   if (!audios || audios.length > 64 || audios.some(item => !item)) return;
+  const videos = record.videos === undefined ? [] : Array.isArray(record.videos) ? record.videos.map(item => fileOf(item, onlineVideoReferencePath, "video")) : undefined;
+  if (!videos || videos.length > 64 || videos.some(item => !item)) return;
   if (!videoGenerationSchema.shape.referenceOrder.safeParse(record.referenceOrder).success || !videoGenerationSchema.shape.mode.safeParse(record.mode).success) return;
   const other = z.strictObject({
     videoOperation: z.enum(["generate", "edit", "extend"]).optional(),
@@ -94,7 +99,7 @@ export function asOnlineImageRecord(value: unknown): OnlineImageRecord | undefin
     }
     if (other.data?.sourceVideoUrl !== undefined) validateVolcengineVideoUrl(other.data.sourceVideoUrl);
   } catch { return; }
-  if (record.referenceOrder?.some(reference => !("index" in reference) || !({ image: references, video: videoUrls, audio: audios }[reference.type]?.[reference.index]))) return;
+  if (record.referenceOrder?.some(reference => !("index" in reference) || !({ image: references, video: videos.length ? videos : videoUrls, audio: audios }[reference.type]?.[reference.index]))) return;
   if (mediaType === "video" && [...record.prompt.matchAll(/\{\{ref (\d+)\}\}/g)].some(match => !record.referenceOrder?.[Number(match[1]) - 1])) return;
   return {
     id: record.id, createdAt: record.createdAt, prompt: record.prompt,
@@ -105,7 +110,7 @@ export function asOnlineImageRecord(value: unknown): OnlineImageRecord | undefin
     ...(record.duration !== undefined ? { duration: record.duration } : {}),
     ...(record.generateAudio !== undefined ? { generateAudio: record.generateAudio } : {}),
     ...(mediaType === "video" ? {
-      audios: audios as OnlineImageFile[], videoUrls, referenceOrder: record.referenceOrder, mode: record.mode, other: other.data,
+      audios: audios as OnlineImageFile[], videos: videos as OnlineImageFile[], videoUrls, referenceOrder: record.referenceOrder, mode: record.mode, other: other.data,
     } : {}),
     ...(record.size ? { size: record.size } : {}),
     ...(record.ratio ? { ratio: record.ratio } : {}),

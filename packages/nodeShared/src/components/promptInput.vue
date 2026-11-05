@@ -9,6 +9,9 @@
     <div ref="expandedTarget" class="promptExpandedTarget nodrag nopan nowheel" @pointerdown.stop @mousedown.stop @dblclick.stop />
   </el-dialog>
   <el-image-viewer v-if="previewUrl" :urlList="[previewUrl]" teleported @close="previewReferenceId = undefined" />
+  <el-dialog v-model="videoPreviewVisible" title="参考视频" width="min(860px, 92vw)" appendToBody alignCenter destroyOnClose>
+    <video v-if="previewVideoUrl" :src="previewVideoUrl" controls preload="metadata" style="display: block; width: 100%; max-height: 70vh" />
+  </el-dialog>
   <teleport :to="mentionTarget || 'body'">
     <promptReferenceMenu
       v-if="mentionVisible"
@@ -37,7 +40,7 @@ import type { MaterialMention, ReferenceMention } from "../useNodeReferences";
 import { getPromptText } from "../promptText";
 import promptReferenceMenu from "./promptReferenceMenu.vue";
 
-type Reference = ReferenceMention;
+type Reference = ReferenceMention & { videoUrl?: string };
 const props = defineProps<{
   references: Reference[];
   materials?: MaterialMention[];
@@ -64,7 +67,12 @@ let mentionCursor: MentionCursor | undefined;
 const previewReferenceId = ref<string>();
 const previewUrl = computed(() => {
   const reference = props.references.find(item => item.id === previewReferenceId.value);
-  return reference?.previewable === false ? "" : String(reference?.avatar ?? "");
+  return reference?.videoUrl || reference?.previewable === false ? "" : String(reference?.avatar ?? "");
+});
+const previewVideoUrl = computed(() => props.references.find(item => item.id === previewReferenceId.value)?.videoUrl ?? "");
+const videoPreviewVisible = computed({
+  get: () => !!previewVideoUrl.value,
+  set: visible => { if (!visible) previewReferenceId.value = undefined; },
 });
 let sender: xSender | undefined;
 let resetTask: Promise<void> | undefined;
@@ -134,7 +142,7 @@ async function chooseReference(select: () => Reference | undefined | Promise<Ref
 function previewReference(event: MouseEvent) {
   const tag = event.target instanceof Element ? event.target.closest<HTMLElement>(".imageReference[data-reference-id]") : null;
   const reference = props.references.find(item => item.id === tag?.dataset.referenceId);
-  if (!reference?.avatar || reference.previewable === false) return;
+  if ((!reference?.avatar && !reference?.videoUrl) || reference.previewable === false) return;
   event.preventDefault();
   event.stopPropagation();
   sender?.bus.emit(xSender.EventSet.EVENT_COMMON_DIALOG_CLOSE);
@@ -147,6 +155,7 @@ function referenceHtml(reference: Reference) {
   tag.className = "imageReference";
   tag.dataset.referenceId = reference.id;
   tag.dataset.value = reference.value;
+  if (reference.videoUrl && reference.previewable !== false) tag.classList.add("previewable");
   if (reference.avatar) {
     if (reference.previewable !== false) tag.classList.add("previewable");
     const image = document.createElement("img");
@@ -163,7 +172,7 @@ function normalizeModel(value: AnyTagProps[][]): AnyTagProps[][] {
   if (!value.length) return [[{ type: "Write", text: "" }]];
   return value.map(line => {
     const tags = line.flatMap((tag): AnyTagProps[] => {
-      if (tag.type === "Write") return tag.text.split(/(\{\{ref \d+\}\})/g).map(text => {
+      if (tag.type === "Write") return tag.text.split(/(\{\{ref \d+\}\}|@(?:图片|视频|音频)\d+\b)/g).map(text => {
         const reference = props.references.find(item => item.value === text);
         return reference
           ? { type: "Custom", html: `<span style="display: inline-block;">${referenceHtml(reference)}</span>` }

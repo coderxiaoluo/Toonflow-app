@@ -20,9 +20,7 @@
           <el-option value="extend" label="延长" />
         </el-select>
         <div v-if="isSourceVideoOperation" class="sourceVideoOptions">
-          <div class="sectionLabel">原视频公网 URL</div>
-          <el-input v-model="sourceVideoUrl" :disabled="disabled" placeholder="https://example.com/video.mp4" aria-label="原视频公网 URL" />
-          <p class="operationHint">原视频须为 4–30 秒、可公开访问的 MP4 直链。</p>
+          <p class="operationHint">连接一个 4–30 秒的原视频节点，生成时自动通过 Cloudflare 临时通道供模型读取。无需填写链接或上传存储桶，生成期间请保持电脑联网。</p>
           <template v-if="other.videoOperation === 'extend'">
             <div class="sectionLabel">新增时长</div>
             <el-select v-model="extensionDuration" :disabled="disabled" :teleported="false" aria-label="新增视频时长">
@@ -67,7 +65,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ElButton, ElInput, ElPopover, ElSelect, ElOption, ElSwitch } from "element-plus";
+import { ElButton, ElPopover, ElSelect, ElOption, ElSwitch } from "element-plus";
 import { IconChevronDown, IconChevronUp } from "@tabler/icons-vue";
 import type { NodeMediaModel } from "@toonflow/nodes-scaffold/runtime";
 import modelForm from "@toonflow/node-shared/modelForm";
@@ -89,10 +87,6 @@ const videoOperation = computed({
 const extensionDuration = computed({
   get: () => typeof other.value.extensionDuration === "number" ? other.value.extensionDuration : -1,
   set: (value: number) => { other.value.extensionDuration = value; },
-});
-const sourceVideoUrl = computed({
-  get: () => typeof other.value.sourceVideoUrl === "string" ? other.value.sourceVideoUrl : "",
-  set: (value: string) => { other.value.sourceVideoUrl = value; },
 });
 const extensionDurations = Array.from({ length: 27 }, (_, index) => index + 4);
 const summary = computed(() => isSourceVideoOperation.value

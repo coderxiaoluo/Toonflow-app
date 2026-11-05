@@ -456,11 +456,16 @@ export async function refreshMediaProviderModels(fileName: string, revision: str
   const provider = await getMediaProvider("developCc");
   if (revision !== provider.revision) invalid("供应商配置已被修改，请刷新页面后再获取", 409);
   const apiKey = getMediaProviderApiKey(provider.id);
-  const fetched = await fetchProviderModels({ apiUrl: developCcApiUrl, protocol: developCcProtocol, apiKey });
+  const catalogs = await Promise.all([
+    fetchProviderModels({ apiUrl: "https://image.develop.cc/v1", protocol: developCcProtocol, apiKey })
+      .then(models => models.map(model => ({ ...model, type: "image" as const }))),
+    fetchProviderModels({ apiUrl: "https://video.develop.cc/v1", protocol: developCcProtocol, apiKey })
+      .then(models => models.map(model => ({ ...model, type: "video" as const }))),
+  ]);
+  const fetched = catalogs.flat();
   const models = fetched.flatMap(model => {
     const previous = provider.models.find(item => item.id === model.id);
     const type = model.type ?? previous?.type;
-    if (!type || type === "text") return [];
     return [{ ...previous, ...model.modelInfo, id: model.id, label: model.label, type }];
   });
   if (!models.length) throw new Error("未获取到媒体模型，保留原有列表");

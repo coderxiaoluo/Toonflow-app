@@ -150,7 +150,8 @@ function resumableAssets(assets: MediaAsset[], mediaType: "image" | "video" | "a
 }
 
 async function prepareRequest<T>(directory: string | undefined, mediaType: "image" | "video" | "audio", request: MediaGenerationRequest,
-  read: (cwd: string, reference: MediaReference, type: string, signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) {
+  read: (cwd: string, reference: MediaReference, type: string, signal?: AbortSignal) => Promise<T>, signal?: AbortSignal,
+  tunneledVideos?: MediaInput[]) {
   // ACT: 仅向已适配引用映射的内置供应商传递，其他第三方适配器仍接收原有公共参数。
   const remoteVideos = mediaType === "video" && request.providerId === "developCc" ? request.other?.referenceVideoUrls : undefined;
   let videoUrls: Extract<MediaInput, { type: "url" }>[] | undefined;
@@ -159,7 +160,7 @@ async function prepareRequest<T>(directory: string | undefined, mediaType: "imag
     videoUrls = remoteVideos.map(url => ({ type: "url", url: validateVolcengineVideoUrl(url) }));
     if (request.videos?.length) invalid("参考视频不能同时使用本地文件和公网地址");
   }
-  if (mediaType === "video" && request.providerId === "developCc" && request.videos?.length) invalid("Develop 参考视频只接受公网 URL，不支持本地视频");
+  if (mediaType === "video" && request.providerId === "developCc" && request.videos?.length && !tunneledVideos) invalid("Develop 本地参考视频需要桌面端临时公网通道");
   const referenceOrder = mediaType === "video" && ["toonflow", "apiMart", "metaso", "compshare", "developCc"].includes(request.providerId) ? request.referenceOrder : undefined;
   if (referenceOrder) {
     const media = { image: request.images, video: videoUrls ?? request.videos, audio: request.audios };
@@ -190,7 +191,7 @@ async function prepareRequest<T>(directory: string | undefined, mediaType: "imag
   return {
     type: "video" as const, model: request.modelId, prompt: request.prompt, images, other: request.other,
     ...(referenceOrder ? { referenceOrder } : {}),
-    videos: videoUrls ?? await references(request.videos, "video"), audios: await references(request.audios, "audio"),
+    videos: tunneledVideos ?? videoUrls ?? await references(request.videos, "video"), audios: await references(request.audios, "audio"),
     firstFrame: (await references(request.firstFrame ? [request.firstFrame] : undefined, "image"))?.[0],
     lastFrame: (await references(request.lastFrame ? [request.lastFrame] : undefined, "image"))?.[0],
     ratio: request.ratio, resolution: request.resolution, duration: request.duration, generateAudio: request.generateAudio, mode: request.mode,
@@ -239,6 +240,7 @@ export async function generateMedia(
   request: MediaGenerationRequest,
   signal?: AbortSignal,
   task?: MediaGenerationTask,
+  createVideoTunnel?: (directory: string, path: string, signal?: AbortSignal) => Promise<{ url: string; stop(): Promise<void> }>,
 ): Promise<GeneratedMedia[]> {
   signal?.throwIfAborted();
   if (!request.prompt.trim()) invalid("请输入生成提示词");
@@ -285,11 +287,33 @@ export async function generateMedia(
       if (typeof generate !== "function") invalid(t`此供应商不支持${translateMessage({ image: "图片", video: "视频", audio: "音频" }[mediaType])}生成`);
       const rules = Array.isArray(provider.rules) ? provider.rules : [];
       if (rules.some(rule => rule.field === "apiKey") && (typeof provider.config.apiKey !== "string" || !provider.config.apiKey.trim())) invalid("请先在媒体模型设置中配置供应商 API Key");
-      const { type, ...parameters } = await prepareRequest(directory, mediaType, request, readReference, signal);
-      signal?.throwIfAborted();
-      finish = beginGeneration(provider);
-      assets = type === "audio" ? await provider.generateAudio!(parameters as AudioRequest)
-        : type === "image" ? await provider.generateImage!(parameters as ImageRequest) : await provider.generateVideo!(parameters as VideoRequest);
+      const modifyingVideo = mediaType === "video" && request.providerId === "developCc" && request.modelId === "seedance-2.5"
+        && ["edit", "extend"].includes(String(request.other?.videoOperation));
+      const localVideos = mediaType === "video" && request.providerId === "developCc" ? request.videos ?? [] : [];
+      const sourceUrl = typeof request.other?.sourceVideoUrl === "string" ? request.other.sourceVideoUrl.trim() : "";
+      if (modifyingVideo && localVideos.length && (localVideos.length !== 1 || sourceUrl)) invalid("编辑或延长只允许一段原视频，请选择视频节点或公网直链其中一种");
+      if (localVideos.length && !createVideoTunnel) invalid("本地视频公网通道仅支持在桌面客户端本机操作");
+      const model = provider.models?.find(model => model.id === request.modelId);
+      const videoLimit = Math.max(0, ...(model?.mode ?? []).flatMap(mode => Array.isArray(mode)
+        ? mode.filter(item => item.startsWith("videoReference:")).map(item => Number(item.split(":")[1]) || 0) : []));
+      if (localVideos.length > videoLimit) invalid(`当前模型最多支持 ${videoLimit} 段参考视频`);
+      const tunnels: { url: string; stop(): Promise<void> }[] = [];
+      try {
+        for (const video of localVideos) {
+          signal?.throwIfAborted();
+          tunnels.push(await createVideoTunnel!(directory, video.path, signal));
+        }
+        const effectiveRequest = modifyingVideo && tunnels.length ? {
+          ...request, other: { ...request.other, sourceVideoUrl: tunnels[0]!.url },
+        } : request;
+        const { type, ...parameters } = await prepareRequest(directory, mediaType, effectiveRequest, readReference, signal,
+          tunnels.length ? tunnels.map(tunnel => ({ type: "url" as const, url: tunnel.url })) : undefined);
+        signal?.throwIfAborted();
+        finish = beginGeneration(provider);
+        if (type === "audio") assets = await provider.generateAudio!(parameters as AudioRequest);
+        else if (type === "image") assets = await provider.generateImage!(parameters as ImageRequest);
+        else assets = await provider.generateVideo!(parameters as VideoRequest);
+      } finally { await Promise.all(tunnels.map(tunnel => tunnel.stop())); }
     }
     if (!Array.isArray(assets) || !assets.length) invalid("供应商未返回生成结果");
     if (checkpoint?.assetCount !== undefined && checkpoint.assetCount !== assets.length) invalid("恢复任务的结果数量发生变化");

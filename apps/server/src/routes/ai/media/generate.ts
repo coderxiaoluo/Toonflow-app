@@ -16,9 +16,14 @@ export default Router().post("/", validateFields({
     return;
   }
   const cwd = await u.workspace.resolveWorkspace(req, directory);
+  const origin = `http://${req.get("host")}`;
+  const sourceOrigin = req.get("origin");
+  const localUi = req.hostname === "127.0.0.1" && ["127.0.0.1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "")
+    && (sourceOrigin === undefined ? req.get("referer")?.startsWith(`${origin}/`) : sourceOrigin === origin);
+  const createVideoTunnel = localUi ? req.app.locals.desktop?.createMediaVideoTunnel : undefined;
   if (taskId) {
     if (req.aborted || res.destroyed) return;
-    await u.mediaTasks.start(cwd, taskId, mediaType, parsed.data, { nodeId, canvasPath });
+    await u.mediaTasks.start(cwd, taskId, mediaType, parsed.data, { nodeId, canvasPath }, createVideoTunnel);
     res.set("Cache-Control", "no-store").json(success({ taskId }));
     return;
   }
@@ -33,7 +38,7 @@ export default Router().post("/", validateFields({
     res.flushHeaders();
     // ACT: JSON 允许前导空白，保活时保留现有 response.json() 契约。
     heartbeat = setInterval(() => { if (!res.destroyed && !res.writableEnded && !res.writableNeedDrain) res.write("\n"); }, 20000);
-    const files = await u.mediaGeneration.generateMedia(cwd, mediaType, parsed.data, controller.signal);
+    const files = await u.mediaGeneration.generateMedia(cwd, mediaType, parsed.data, controller.signal, undefined, createVideoTunnel);
     if (!res.destroyed) res.write(JSON.stringify(success(files)));
   } catch (err) {
     if (!res.destroyed) res.write(JSON.stringify(errorFromCause(err)));

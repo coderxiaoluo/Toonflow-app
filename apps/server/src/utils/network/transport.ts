@@ -74,7 +74,7 @@ function createTransport(profile: NetworkProfile, failure?: Error) {
     const proxy = address && !bypassProxy(url, profile.noProxy) ? proxies.get(address) : undefined;
     return proxy ? proxy.dispatch(options, handler) : dispatch(options, handler);
   });
-  return { dispatcher, failure, close };
+  return { dispatcher, failure, close, profile };
 }
 
 let activeTransport: ReturnType<typeof createTransport> | undefined;
@@ -96,6 +96,19 @@ export async function requestNetwork(input: Parameters<typeof fetch>[0], init?: 
   if (!/^https?:/.test(url)) return nativeFetch(input, init);
   const transport = profile ? createTransport(profile) : activeTransport;
   if (!transport) return nativeFetch(input, init);
+  // Bun 1.3 的 Node 流兼容层可能令 Undici 响应正文一直等待；原生 fetch 同时负责流和取消。
+  if (process.versions.bun && !(input instanceof undici.Request)) {
+    const target = new URL(url);
+    const local = localHost(target.hostname);
+    if (!local && transport.failure) throw transport.failure;
+    const address = target.protocol === "https:" ? transport.profile.httpsProxy : transport.profile.httpProxy;
+    const proxy = !local && address && !bypassProxy(target, transport.profile.noProxy) ? address : "";
+    try {
+      return await nativeFetch(input, { ...init, proxy } as Parameters<typeof fetch>[1]);
+    } finally {
+      if (profile) void transport.close().catch(() => {});
+    }
+  }
   try {
     // ACT: Bun Request 只能通过公开 body 流转换；不全量缓冲上传。需重放正文的调用方使用 URL + body 或 Undici Request。
     const nativeRequest = input instanceof Request ? input : undefined;
