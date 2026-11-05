@@ -3,9 +3,9 @@ import { mkdir, readFile, realpath, stat, unlink } from "@toonflow/file";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 import { mediaProviders, type Provider, type ProviderTaskData } from "@toonflow/providers";
+import { validateVolcengineVideoUrl } from "@toonflow/providers/media/volcengineArk";
 import type { GeneratedMedia, MediaGenerationRequest, MediaModel, MediaReference } from "@toonflow/tools-scaffold/runtime";
 import conf from "@/utils/conf";
-import { getAccountProvider } from "@/utils/ai";
 import { getMediaProvider, listMediaProviders, loadMediaProviderSource } from "@/utils/media/provider";
 import { lockWorkspaceFiles, resolveWorkspacePath, writeWorkspaceFile } from "@/utils/workspace/files";
 import { beginGeneration, getProviderPrice } from "@/utils/media/billing";
@@ -47,8 +47,7 @@ function imageOptions(value: unknown, pattern: RegExp) {
 
 export async function listMediaModels(): Promise<MediaModel[]> {
   const installedProviders = await listMediaProviders();
-  installedProviders.sort((left, right) => Number(right.id === "toonflow") - Number(left.id === "toonflow"));
-  return installedProviders.filter(provider => provider.id !== "toonflow" || !!getAccountProvider()).flatMap(provider => provider.models.flatMap(model => {
+  return installedProviders.flatMap(provider => provider.models.flatMap(model => {
     if (model.type !== "image" && model.type !== "video" && model.type !== "audio") return [];
     const builtIn = (mediaProviders as readonly Provider[]).find(item => item.id === provider.id)?.models.find(item => item.id === model.id);
     const videoRatios = model.type === "video" ? imageOptions(model.videoRatios, /^(?:adaptive|[1-9]\d{0,3}:[1-9]\d{0,3})$/) : undefined;
@@ -61,6 +60,8 @@ export async function listMediaModels(): Promise<MediaModel[]> {
       mode: model.mode, durationResolutionMap: model.durationResolutionMap, audio: model.audio,
       ...(model.type === "audio" ? { voices: model.voices } : {}),
       ...(model.type === "image" ? {
+        ...(typeof model.imageReferences === "number" && Number.isSafeInteger(model.imageReferences) && model.imageReferences >= 0
+          ? { imageReferences: model.imageReferences } : typeof builtIn?.imageReferences === "number" ? { imageReferences: builtIn.imageReferences } : {}),
         imageSizes: imageOptions(Array.isArray(model.imageSizes) ? model.imageSizes : builtIn?.imageSizes, /^[^\u0000-\u001f\u007f]+$/),
         imageRatios: imageOptions(Array.isArray(model.imageRatios) ? model.imageRatios : builtIn?.imageRatios, /^[1-9]\d{0,3}:[1-9]\d{0,3}$/),
       } : {}),
@@ -151,9 +152,17 @@ function resumableAssets(assets: MediaAsset[], mediaType: "image" | "video" | "a
 async function prepareRequest<T>(directory: string | undefined, mediaType: "image" | "video" | "audio", request: MediaGenerationRequest,
   read: (cwd: string, reference: MediaReference, type: string, signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) {
   // ACT: 仅向已适配引用映射的内置供应商传递，其他第三方适配器仍接收原有公共参数。
-  const referenceOrder = mediaType === "video" && ["toonflow", "apiMart", "metaso", "compshare"].includes(request.providerId) ? request.referenceOrder : undefined;
+  const remoteVideos = mediaType === "video" && request.providerId === "developCc" ? request.other?.referenceVideoUrls : undefined;
+  let videoUrls: Extract<MediaInput, { type: "url" }>[] | undefined;
+  if (remoteVideos !== undefined) {
+    if (!Array.isArray(remoteVideos) || remoteVideos.length > 64) invalid("参考视频地址必须为不超过 64 项的数组");
+    videoUrls = remoteVideos.map(url => ({ type: "url", url: validateVolcengineVideoUrl(url) }));
+    if (request.videos?.length) invalid("参考视频不能同时使用本地文件和公网地址");
+  }
+  if (mediaType === "video" && request.providerId === "developCc" && request.videos?.length) invalid("Develop 参考视频只接受公网 URL，不支持本地视频");
+  const referenceOrder = mediaType === "video" && ["toonflow", "apiMart", "metaso", "compshare", "developCc"].includes(request.providerId) ? request.referenceOrder : undefined;
   if (referenceOrder) {
-    const media = { image: request.images, video: request.videos, audio: request.audios };
+    const media = { image: request.images, video: videoUrls ?? request.videos, audio: request.audios };
     for (const [index, reference] of referenceOrder.entries()) {
       const available = reference.type === "text" || ("index" in reference
         ? Number.isSafeInteger(reference.index) && reference.index >= 0 && !!media[reference.type]?.[reference.index]
@@ -181,7 +190,7 @@ async function prepareRequest<T>(directory: string | undefined, mediaType: "imag
   return {
     type: "video" as const, model: request.modelId, prompt: request.prompt, images, other: request.other,
     ...(referenceOrder ? { referenceOrder } : {}),
-    videos: await references(request.videos, "video"), audios: await references(request.audios, "audio"),
+    videos: videoUrls ?? await references(request.videos, "video"), audios: await references(request.audios, "audio"),
     firstFrame: (await references(request.firstFrame ? [request.firstFrame] : undefined, "image"))?.[0],
     lastFrame: (await references(request.lastFrame ? [request.lastFrame] : undefined, "image"))?.[0],
     ratio: request.ratio, resolution: request.resolution, duration: request.duration, generateAudio: request.generateAudio, mode: request.mode,
@@ -201,8 +210,12 @@ async function preparePriceRequest(directory: string | undefined, mediaType: "im
   const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
   try {
     const prepared = await prepareRequest(directory, mediaType, request, readPriceReference, combined);
-    if (prepared.type === "video") delete prepared.referenceOrder;
-    return prepared;
+    if (prepared.type !== "video") return prepared;
+    delete prepared.referenceOrder;
+    return { ...prepared, videos: prepared.videos?.map(item => {
+      if (!("sizeBytes" in item)) invalid("公网参考视频无法在不读取文件的情况下估价");
+      return item;
+    }) };
   }
   catch (error) {
     signal?.throwIfAborted();

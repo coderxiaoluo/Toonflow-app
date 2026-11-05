@@ -112,9 +112,9 @@ const props = withDefaults(defineProps<{ visible?: boolean; downloadOnOpen?: boo
 const headers = { "x-toonflow-workspace": "1" };
 const toolNames = ["ffmpeg", "ffprobe"] as const;
 const modeDescriptions = {
-  auto: "优先使用已下载的版本；未下载时，从当前 Toonflow 服务的系统 PATH 查找。",
+  get auto() { return translate("优先使用已下载的版本；未下载时，从当前 Toonflow 服务的系统 PATH 查找。"); },
   download: "仅使用此页面下载的版本。",
-  system: "仅从当前 Toonflow 服务的系统 PATH 查找 FFmpeg 与 ffprobe。",
+  get system() { return translate("仅从当前 Toonflow 服务的系统 PATH 查找 FFmpeg 与 ffprobe。"); },
 };
 const phaseLabels = { idle: "等待下载", downloading: "正在下载", verifying: "正在校验", installing: "正在安装", completed: "下载完成", error: "下载失败", cancelled: "已取消" };
 const config = computed<FfmpegConfig>(() => {

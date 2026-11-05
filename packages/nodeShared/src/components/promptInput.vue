@@ -439,6 +439,8 @@ function handleMentionKey(event: KeyboardEvent) {
 .promptInputWrap {
   position: relative;
   margin: 12px 0 16px;
+  min-width: 0;
+  min-height: 112px;
 
   .expandButton {
     position: absolute;
@@ -463,8 +465,19 @@ function handleMentionKey(event: KeyboardEvent) {
   height: 80vh;
 }
 
-:global(.promptEditorDialog .el-dialog__body) { flex: 1; min-height: 0; }
-.promptExpandedTarget { height: 100%; }
+:global(.promptEditorDialog .el-dialog__body) {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.promptExpandedTarget {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
 
 .promptInput,
 :global(.textNodeMentions) {
@@ -492,13 +505,50 @@ function handleMentionKey(event: KeyboardEvent) {
 
 .promptInput {
   display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 112px;
+  padding: 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 10px;
+  background: var(--el-fill-color-blank);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+
+  &:focus-within {
+    border-color: var(--el-color-primary);
+    box-shadow: 0 0 0 2px var(--el-color-primary-light-9);
+  }
+
+  :deep(.chat-rich-text) { min-height: 88px !important; max-height: 240px !important; }
+  :deep([contenteditable="true"]) {
+    min-height: 88px;
+    border: 0;
+    outline: none;
+    box-shadow: none;
+    background: transparent;
+    color: var(--el-text-color-primary);
+    font: inherit;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
   cursor: text;
   -webkit-user-select: text;
   user-select: text;
 
   &.expandedInput {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
     height: 100%;
+    min-height: 0;
     margin: 0;
+    padding: 16px;
+
+    :deep(.chat-area-wrap) { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; }
+    :deep(.chat-rich-text) { flex: 1; height: 100%; min-height: 160px !important; max-height: none !important; }
+    :deep([contenteditable="true"]) { min-height: 100%; }
   }
 
   &:deep(.imageReference) {

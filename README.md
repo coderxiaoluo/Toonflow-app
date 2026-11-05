@@ -1,10 +1,5 @@
 # Toonflow
 
-AI 短剧、漫剧与视频创作平台。本仓库 fork 自 [HBAI-Ltd/Toonflow-app](https://github.com/HBAI-Ltd/Toonflow-app)，在官方版本基础上做了本地修改，主要用于个人开发与使用。
-
-- 官方上游：<https://github.com/HBAI-Ltd/Toonflow-app>
-- 本仓库：<https://github.com/coderxiaoluo/Toonflow-app>
-
 ## 一、下载
 
 ### 直接使用桌面客户端

@@ -6,6 +6,7 @@ import { getSupportedThinkingLevels, type Context, type KnownApi, type Model, ty
 import { defaultThinkingLevels, thinkingLevels, type ThinkingLevel } from "@/lib/modelReasoning";
 import { z } from "zod";
 import conf from "@/utils/conf";
+import { developCcApiUrl, developCcProtocol, getDevelopCcApiKey } from "@/utils/media/developCc";
 import { readReference } from "@/utils/media/generation";
 import { findModelContextLimits } from "@/utils/ai/modelContextLimits";
 import { createFileTransport, getUnsupportedFileText, type FileProvider } from "@/utils/ai/files";
@@ -57,8 +58,8 @@ export function getAccountProvider() {
 
 export function getConfiguredProviders() {
   const providers = conf.get("settings", {}).customProviders;
-  const account = getAccountProvider();
-  return [...(account ? [account] : []), ...(Array.isArray(providers) ? providers.filter(item => typeof item?.id !== "string" || item.id.toLowerCase() !== "toonflow") : [])];
+  const provider = Array.isArray(providers) ? providers.find(item => item?.id === "developCc") : undefined;
+  return provider ? [{ ...provider, id: "developCc", apiUrl: developCcApiUrl, protocol: developCcProtocol, apiKey: getDevelopCcApiKey() }] : [];
 }
 
 const builtinModels: Model<KnownApi>[] = getBuiltinProviders().flatMap(provider => getBuiltinModels(provider));

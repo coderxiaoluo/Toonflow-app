@@ -101,9 +101,7 @@ export const toonflowAccountToken = computed(() => {
 });
 export const customProviders = computed<CustomProvider[]>(() => {
   const providers = Array.isArray(settings.value.customProviders) ? [...settings.value.customProviders] : [];
-  const accountProvider = settings.value.toonflowProvider as CustomProvider | null | undefined;
-  if (toonflowAccountToken.value && (accountProvider?.id === "Toonflow" || accountProvider?.id === "toonflow")) providers.unshift(accountProvider);
-  return providers.filter((item): item is CustomProvider => !!item && typeof item.id === "string" && typeof item.label === "string" && Array.isArray(item.models)
+  return providers.filter((item): item is CustomProvider => !!item && item.id === "developCc" && typeof item.label === "string" && Array.isArray(item.models)
     && item.models.every((model: CustomProviderModel) => !!model && typeof model.id === "string" && typeof model.label === "string"));
 });
 
@@ -175,7 +173,6 @@ export async function loadSettings() {
   // 等初始化引发的监听执行完，再允许自动保存。
   await nextTick();
   settingsReady = true;
-  void refreshToonflowProvider();
 }
 
 export function saveSettings(update?: (current: Record<string, unknown>) => Record<string, unknown> | undefined) {
@@ -217,9 +214,10 @@ export function saveSettings(update?: (current: Record<string, unknown>) => Reco
       } finally { applyingSettings = false; }
     }
     const accountChanged = Object.hasOwn(savedPatch, "toonflowProvider") || Object.hasOwn(savedPatch, "toonflowAccount");
-    if (accountChanged || Object.hasOwn(savedPatch, "customProviders")) invalidateNodeModels("language");
-    if (accountChanged) invalidateNodeModels("media");
-    if (accountChanged || Object.hasOwn(savedPatch, "mediaProviderConfigs")) {
+    const gatewayChanged = Object.hasOwn(savedPatch, "developCc");
+    if (accountChanged || gatewayChanged || Object.hasOwn(savedPatch, "customProviders")) invalidateNodeModels("language");
+    if (accountChanged || gatewayChanged) invalidateNodeModels("media");
+    if (accountChanged || gatewayChanged || Object.hasOwn(savedPatch, "mediaProviderConfigs")) {
       window.dispatchEvent(new Event("toonflow:provider-config-changed"));
     }
     return true;

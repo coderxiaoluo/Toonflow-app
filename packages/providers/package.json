@@ -10,6 +10,7 @@
     ".": "./index.ts",
     "./types": "./types.d.ts",
     "./language/deepSeek": "./src/language/deepSeek.ts",
+    "./media/developCc": "./src/media/developCc.ts",
     "./media/apiMart": "./src/media/apiMart.ts",
     "./media/metaso": "./src/media/metaso.ts",
     "./media/compshare": "./src/media/compshare.ts",

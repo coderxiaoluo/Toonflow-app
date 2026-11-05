@@ -113,10 +113,21 @@ function getAccount(provider: RuntimeProvider) {
   return account;
 }
 
-export async function getProviderBalance(providerId: string, apiKey?: string): Promise<BalanceSnapshot> {
+export function invalidateProviderCaches() {
+  prices.clear();
+  for (const account of accounts.values()) {
+    account.epoch++;
+    account.provider = undefined;
+    account.refreshRequested = false;
+    for (const response of account.connections) response.end();
+  }
+  accounts.clear();
+}
+
+export async function getProviderBalance(providerId: string, _apiKey?: string): Promise<BalanceSnapshot> {
   const { source } = await getMediaProvider(providerId);
   const configs = conf.get("settings", {}).mediaProviderConfigs as Record<string, Record<string, unknown>> | undefined;
-  const provider = await loadMediaProviderSource(source, { ...configs?.[providerId], ...(apiKey === undefined ? {} : { apiKey }) });
+  const provider = await loadMediaProviderSource(source, { ...configs?.[providerId] });
   const account = getAccount(provider);
   if (account.provider && account.provider.sourceRevision !== provider.sourceRevision) account.epoch++;
   account.provider = provider;

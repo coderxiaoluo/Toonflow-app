@@ -22,7 +22,7 @@ export default async function createDesktopConnection(app: express.Express, dire
 
   async function start() {
     const connection = await createRemoteConnection(directory, {
-      deviceName: `Toonflow ${hostname()}`,
+      deviceName: `xiaobo ${hostname()}`,
       appVersion: app.locals.appVersion,
       validateTarget(source) {
         const target = new URL(source);

@@ -2,23 +2,28 @@
   <div class="onlineImage">
     <header class="pageHeader">
       <div>
-        <h1>在线生图</h1>
-        <p>选择已启用的图片模型，生成结果会保存在本地。</p>
+        <h1>在线生成</h1>
+        <p>选择已启用的{{ mediaLabel }}模型，生成结果会保存在本地。</p>
       </div>
       <el-button text @click="emit('openSettings')">模型设置</el-button>
     </header>
+    <el-radio-group v-model="mediaType" class="mediaTabs" aria-label="生成类型" :disabled="generating">
+      <el-radio-button value="image">图片</el-radio-button>
+      <el-radio-button value="video">视频</el-radio-button>
+    </el-radio-group>
     <div class="studio">
       <form class="controls" :aria-busy="generating" @submit.prevent="submit">
         <label class="field">
           <span>提示词</span>
-          <el-input ref="promptInput" v-model="prompt" name="prompt" autocomplete="off" type="textarea" :autosize="{ minRows: 5, maxRows: 10 }" resize="none" maxlength="20000" placeholder="输入想生成或编辑的画面…" aria-label="提示词" :disabled="generating" />
+          <el-mention ref="promptInput" v-model="prompt" :options="mentionOptions" name="prompt" autocomplete="off" type="textarea" :autosize="{ minRows: 10, maxRows: 22 }" resize="vertical" maxlength="20000" placeholder="输入提示词，输入 @ 引用已添加的素材…" aria-label="提示词" :disabled="generating" />
         </label>
         <div class="field">
-          <span>参考图</span>
+          <span>参考图片（{{ imageSlots.length }}/{{ referenceLimits.image }}）</span>
           <div class="references">
             <div v-for="(label, index) in referenceLabels" :key="label" class="referenceSlot" :class="{ dragOver: dragIndex === index, filled: slots[index] }">
-              <button type="button" :aria-label="slots[index] ? `更换${label}` : `上传${label}`" :disabled="generating" @click="pickReference(index)" @dragover="dragOver(index, $event)" @dragleave="dragLeave(index, $event)" @drop="dropReference(index, $event)">
-                <img v-if="slots[index]" :src="slots[index]?.preview" alt="" width="160" height="160" />
+              <button type="button" :aria-label="slots[index] ? `更换${label}` : `上传${label}`" :disabled="generating || !referencesAllowed" @click="pickReference(index)" @dragover="dragOver(index, $event)" @dragleave="dragLeave(index, $event)" @drop="dropReference(index, $event)">
+                <img v-if="slots[index]" :src="slots[index]?.preview" :alt="label" width="160" height="160" />
+                <span v-if="slots[index]" class="slotState">{{ label }}</span>
                 <template v-else>
                   <icon-plus :size="18" aria-hidden="true" />
                   <span>{{ label }}</span>
@@ -30,37 +35,74 @@
               </button>
             </div>
           </div>
-          <input ref="fileInput" name="reference" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/bmp,image/tiff" hidden aria-label="上传参考图" :disabled="generating" @change="selectReference" />
+          <input ref="fileInput" name="reference" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/bmp,image/tiff" hidden aria-label="上传参考图" :disabled="generating || !referencesAllowed" @change="selectReference" />
         </div>
-        <div class="options">
-          <label class="field">
-            <span>平台</span>
-            <el-select v-model="providerId" :loading="modelsLoading" :disabled="generating" placeholder="选择平台…" aria-label="平台" noDataText="请先在设置中添加图片模型" @change="selectProvider">
-              <template #label="{ label }"><span translate="no">{{ label }}</span></template>
-              <el-option v-for="item in providers" :key="item.providerId" :label="item.providerLabel" :value="item.providerId">
-                <span translate="no">{{ item.providerLabel }}</span>
-              </el-option>
+        <template v-if="mediaType === 'video'">
+          <label v-if="supportsEditing" class="field">
+            <span>视频操作</span>
+            <el-select v-model="videoOperation" :disabled="generating" aria-label="视频操作">
+              <el-option label="视频生成" value="generate" />
+              <el-option label="视频编辑" value="edit" />
+              <el-option label="视频延长" value="extend" />
             </el-select>
           </label>
+          <template v-if="modifyingVideo">
+            <label class="field">
+              <span>原视频公网直链（4–30 秒）</span>
+              <el-input v-model="sourceVideoUrl" :disabled="generating || videoUploading" placeholder="上传本地视频或粘贴 https://…/source.mp4" aria-label="原视频公网直链" />
+              <el-button :loading="videoUploading" :disabled="generating || videoUploading" @click="pickVideo(true)">上传原视频到 Litterbox</el-button>
+            </label>
+            <p class="formMessage">{{ videoOperation === 'edit' ? '提示词描述要编辑的内容，成片时长与原视频一致。' : '提示词描述向前或向后延长；返回的成片仅包含新增片段。' }}比例跟随原视频；自动时长先按 30 秒预扣，完成后按实际时长结算。</p>
+            <label v-if="videoOperation === 'extend'" class="field">
+              <span>新增时长</span>
+              <el-select v-model="extensionDuration" :disabled="generating" aria-label="新增时长">
+                <el-option label="自动决定" :value="-1" />
+                <el-option v-for="item in 27" :key="item" :label="`${item + 3} 秒`" :value="item + 3" />
+              </el-select>
+            </label>
+          </template>
+          <div v-else-if="referenceLimits.video" class="field">
+            <span>参考视频（{{ videoUrls.length }}/{{ referenceLimits.video }}）</span>
+            <div v-for="(_, index) in videoUrls" :key="index" class="referenceRow">
+              <el-input v-model="videoUrls[index]" :disabled="generating" :aria-label="`视频${index + 1}公网直链`" :placeholder="`视频${index + 1}：https://…/video.mp4`" />
+              <el-button :disabled="generating" aria-label="移除参考视频" @click="videoUrls.splice(index, 1)">移除</el-button>
+            </div>
+            <el-button :disabled="generating || videoUrls.length >= referenceLimits.video" @click="videoUrls.push('')">添加视频直链</el-button>
+            <el-button :loading="videoUploading" :disabled="generating || videoUploading || videoUrls.length >= referenceLimits.video" @click="pickVideo(false)">上传本地参考视频</el-button>
+          </div>
+          <p class="formMessage">本地视频将上传至第三方 Litterbox，临时链接有效约 24 小时，无需存储桶。请勿上传敏感素材；链接过期后需重新上传。</p>
+          <input ref="videoInput" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" hidden aria-label="上传视频到 Litterbox" :disabled="generating || videoUploading" @change="selectVideo" />
+          <div v-if="referenceLimits.audio" class="field">
+            <span>参考音频（{{ audioSlots.length }}/{{ referenceLimits.audio }}）</span>
+            <div v-for="(item, index) in audioSlots" :key="item.preview" class="referenceRow">
+              <span>音频{{ index + 1 }}{{ item.uploading ? ' · 上传中…' : '' }}</span>
+              <audio :src="item.preview" controls preload="metadata" />
+              <el-button :disabled="generating" @click="removeAudio(index)">移除</el-button>
+            </div>
+            <el-button :disabled="generating || audioSlots.length >= referenceLimits.audio" @click="audioInput?.click()">添加参考音频</el-button>
+            <input ref="audioInput" type="file" accept="audio/*" hidden aria-label="上传参考音频" :disabled="generating" @change="selectAudio" />
+          </div>
+        </template>
+        <div class="options">
           <label class="field">
             <span>模型</span>
-            <el-select v-model="modelId" :loading="modelsLoading" :disabled="generating || !providerId" placeholder="选择模型" aria-label="模型" noDataText="当前平台没有图片模型" @change="syncSize">
+            <el-select v-model="modelId" :loading="modelsLoading" :disabled="generating || !providerId" placeholder="选择模型" aria-label="模型" :noDataText="`当前平台没有${mediaLabel}模型`" @change="syncSize">
               <template #label="{ label }"><span translate="no">{{ label }}</span></template>
               <el-option v-for="item in providerModels" :key="item.modelId" :label="item.label" :value="item.modelId">
                 <span translate="no">{{ item.label }}</span>
               </el-option>
             </el-select>
           </label>
-          <label class="field">
+          <label v-if="mediaType === 'image' || resolutionOptions.length" class="field">
             <span>分辨率</span>
-            <el-select v-model="size" :disabled="generating || !currentModel" placeholder="分辨率" aria-label="分辨率">
+            <el-select v-model="selectedResolution" :disabled="generating || !currentModel" placeholder="分辨率" aria-label="分辨率">
               <template #label="{ label }"><span translate="no">{{ label }}</span></template>
-              <el-option v-for="item in sizeOptions" :key="item" :label="item" :value="item">
+              <el-option v-for="item in mediaType === 'video' ? resolutionOptions : sizeOptions" :key="item" :label="item" :value="item">
                 <span translate="no">{{ item }}</span>
               </el-option>
             </el-select>
           </label>
-          <label class="field">
+          <label v-if="ratioOptions.length && !modifyingVideo" class="field">
             <span>比例</span>
             <el-select v-model="ratio" :disabled="generating || !currentModel" placeholder="比例" aria-label="比例">
               <template #label="{ label }"><span translate="no">{{ label }}</span></template>
@@ -69,15 +111,25 @@
               </el-option>
             </el-select>
           </label>
-          <label class="field">
+          <label v-if="mediaType === 'image'" class="field">
             <span>数量</span>
             <el-select v-model="count" :disabled="generating" aria-label="生成数量">
               <el-option v-for="item in counts" :key="item" :label="`×${item}`" :value="item" />
             </el-select>
           </label>
+          <label v-if="mediaType === 'video' && durationOptions.length && !modifyingVideo" class="field">
+            <span>时长</span>
+            <el-select v-model="duration" :disabled="generating || !currentModel" aria-label="视频时长">
+              <el-option v-for="item in durationOptions" :key="item" :label="`${item} 秒`" :value="item" />
+            </el-select>
+          </label>
+          <label v-if="mediaType === 'video' && currentModel?.audio !== undefined" class="field">
+            <span>生成音频</span>
+            <el-switch v-model="generateAudio" :disabled="generating || currentModel?.audio !== 'optional'" aria-label="生成音频" />
+          </label>
         </div>
         <p v-if="modelsError" class="formMessage" role="alert">{{ modelsError }} <el-button text @click="loadModels">重试</el-button></p>
-        <p v-else-if="!modelsLoading && !providers.length" class="formMessage">还没有可用的图片模型。<el-button text @click="emit('openSettings')">去设置里添加</el-button></p>
+        <p v-else-if="!modelsLoading && !providers.length" class="formMessage">还没有可用的{{ mediaLabel }}模型。<el-button text @click="emit('openSettings')">去设置里添加</el-button></p>
         <p v-if="formError" class="formMessage" role="alert">{{ formError }}</p>
         <el-button v-if="generating" class="submitButton" nativeType="button" @click="cancel">停止生成</el-button>
         <el-button v-else class="submitButton" type="primary" nativeType="submit">生成</el-button>
@@ -87,17 +139,21 @@
           <icon-loader-2 class="isLoading" :size="28" aria-hidden="true" />
           <span>正在生成…</span>
         </div>
-        <template v-else-if="result">
-          <button type="button" class="stageImage" aria-label="查看生成结果" @click="openDetail(result)">
+        <template v-else-if="result && (result.mediaType ?? 'image') === mediaType">
+          <template v-if="result.mediaType === 'video'">
+            <video class="stageVideo" :src="assetUrl(result.images[0]?.path || '')" :aria-label="result.prompt" controls preload="metadata" />
+            <el-button text @click="openDetail(result)">查看生成设置</el-button>
+          </template>
+          <button v-else type="button" class="stageImage" aria-label="查看生成结果" @click="openDetail(result)">
             <img :src="assetUrl(result.images[0]?.path || '')" :alt="result.prompt" width="720" height="720" fetchpriority="high" />
           </button>
-          <div v-if="result.images.length > 1" class="stageThumbs">
+          <div v-if="result.mediaType !== 'video' && result.images.length > 1" class="stageThumbs">
             <button v-for="(image, index) in result.images" :key="image.path" type="button" :aria-label="`查看第 ${index + 1} 张`" @click="openDetail(result)">
               <img :src="assetUrl(image.path)" alt="" width="64" height="64" />
             </button>
           </div>
         </template>
-        <div v-else class="stageState">生成的图片会显示在这里</div>
+        <div v-else class="stageState">生成的{{ mediaLabel }}会显示在这里</div>
       </section>
     </div>
     <section class="history" aria-labelledby="onlineHistoryTitle">
@@ -105,42 +161,51 @@
         <h2 id="onlineHistoryTitle">归档</h2>
         <div class="historyTools">
           <template v-if="managing">
-            <span class="selectedCount">已选 {{ selectedIds.length }} 张</span>
-            <el-button text :disabled="!history.length" @click="toggleSelectAll">{{ allSelected ? "取消全选" : "全选" }}</el-button>
+            <span class="selectedCount">已选 {{ selectedIds.length }} 条</span>
+            <el-button text :disabled="!filteredHistory.length" @click="toggleSelectAll">{{ allSelected ? "取消全选" : "全选" }}</el-button>
             <el-button text type="danger" :disabled="!selectedIds.length || deletingSelected" @click="removeSelected">删除所选</el-button>
             <el-button text @click="exitManage">完成</el-button>
           </template>
           <template v-else>
-            <el-button text :disabled="!history.length" @click="managing = true">管理</el-button>
+            <el-button text :disabled="!filteredHistory.length" @click="managing = true">管理</el-button>
             <el-button text :disabled="historyLoading" @click="loadHistory">刷新</el-button>
           </template>
         </div>
       </div>
       <p v-if="historyError" class="formMessage" role="alert">{{ historyError }} <el-button text @click="loadHistory">重试</el-button></p>
-      <p v-else-if="historyLoading && !history.length" class="formMessage" role="status">正在加载历史…</p>
-      <p v-else-if="!history.length" class="formMessage">还没有生成记录。填写提示词后点生成。</p>
+      <p v-else-if="historyLoading && !filteredHistory.length" class="formMessage" role="status">正在加载历史…</p>
+      <p v-else-if="!filteredHistory.length" class="formMessage">还没有生成记录。填写提示词后点生成。</p>
       <div v-else class="historyGrid">
         <div v-for="item in visibleHistory" :key="item.id" class="historyCard" :class="{ managing, selected: selectedIds.includes(item.id) }">
-          <button type="button" :aria-label="managing ? `选择：${item.prompt}` : `查看：${item.prompt}`" :aria-pressed="managing ? selectedIds.includes(item.id) : undefined" @click="openHistory(item)">
-            <img :src="assetUrl(item.images[0]?.path || '')" :alt="item.prompt" width="160" height="160" loading="lazy" />
+          <div class="historyPreview" role="button" tabindex="0" :aria-label="managing ? `选择：${item.prompt}` : `查看：${item.prompt}`" :aria-pressed="managing ? selectedIds.includes(item.id) : undefined" @click="openHistory(item)" @keydown.enter.self="openHistory(item)" @keydown.space.self.prevent="openHistory(item)">
+            <img v-if="item.mediaType !== 'video'" :src="assetUrl(item.images[0]?.path || '')" :alt="item.prompt" width="160" height="160" loading="lazy" />
+            <span v-else class="videoArchive" @click.stop>
+              <video :src="assetUrl(item.images[0]?.path || '')" :aria-label="item.prompt" :controls="!managing" preload="metadata" @click="managing && openHistory(item)" @keydown.stop />
+              <el-button v-if="!managing" text @click="openDetail(item)">查看详情</el-button>
+            </span>
             <span v-if="managing" class="selectedMark" aria-hidden="true">{{ selectedIds.includes(item.id) ? "✓" : "" }}</span>
             <span v-if="item.images.length > 1" class="countBadge">×{{ item.images.length }}</span>
-            <span class="historyPrompt">{{ item.prompt }}</span>
-          </button>
+            <span class="historyPrompt">{{ readablePrompt(item) }}</span>
+          </div>
           <button v-if="!managing" class="historyDelete" type="button" aria-label="删除这条记录" @click="removeRecord(item)">
             <icon-trash :size="14" aria-hidden="true" />
           </button>
         </div>
       </div>
-      <el-button v-if="visibleHistory.length < history.length" class="loadMore" text @click="historyVisible += pageSize">加载更多</el-button>
+      <el-button v-if="visibleHistory.length < filteredHistory.length" class="loadMore" text @click="historyVisible += pageSize">加载更多</el-button>
     </section>
     <el-dialog v-model="detailVisible" class="onlineImageDetail" title="生成结果" width="min(760px, 92vw)" appendToBody alignCenter>
       <template v-if="detail">
         <div class="detailImages">
-          <el-image v-for="image in detail.images" :key="image.path" :src="assetUrl(image.path)" :previewSrcList="detail.images.map(item => assetUrl(item.path))" fit="contain" />
+          <template v-if="detail.mediaType === 'video'">
+            <video v-for="image in detail.images" :key="image.path" :src="assetUrl(image.path)" :aria-label="detail.prompt" controls preload="metadata" />
+          </template>
+          <template v-else>
+            <el-image v-for="image in detail.images" :key="image.path" :src="assetUrl(image.path)" :previewSrcList="detail.images.map(item => assetUrl(item.path))" fit="contain" />
+          </template>
         </div>
-        <p class="detailPrompt">{{ detail.prompt }}</p>
-        <p class="detailMeta"><span translate="no">{{ detail.providerLabel }}</span> · <span translate="no">{{ detail.modelLabel }}</span><template v-if="detail.size"> · <span translate="no">{{ detail.size }}</span></template><template v-if="detail.ratio"> · <span translate="no">{{ detail.ratio }}</span></template></p>
+        <p class="detailPrompt">{{ readablePrompt(detail) }}</p>
+        <p class="detailMeta"><span translate="no">{{ detail.providerLabel }}</span> · <span translate="no">{{ detail.modelLabel }}</span><template v-if="detail.size || detail.resolution"> · <span translate="no">{{ detail.resolution || detail.size }}</span></template><template v-if="detail.duration"> · {{ detail.duration }} 秒</template><template v-if="detail.mediaType === 'video' && detail.generateAudio !== undefined"> · {{ detail.generateAudio ? '有音频' : '无音频' }}</template><template v-if="detail.ratio"> · <span translate="no">{{ detail.ratio }}</span></template></p>
         <div class="detailActions">
           <el-button @click="applyRecord(detail)">使用此设置</el-button>
           <el-button @click="downloadImage(detail.images[0]?.path || '')">下载</el-button>
@@ -154,17 +219,25 @@
 <script setup lang="ts">
 import axios from "axios";
 import { computed, onUnmounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox, type InputInstance } from "element-plus";
+import { ElMessage, ElMessageBox, type MentionInstance } from "element-plus";
 import { IconLoader2, IconPlus, IconTrash, IconX } from "@tabler/icons-vue";
 
-type ImageModel = {
+type MediaType = "image" | "video";
+type MediaModel = {
   providerId: string;
   providerLabel: string;
   modelId: string;
   label: string;
   type: string;
+  imageReferences?: number;
   imageSizes?: string[];
   imageRatios?: string[];
+  videoRatios?: string[];
+  durationResolutionMap?: { duration: number[]; resolution: string[] }[];
+  defaultDuration?: number;
+  defaultResolution?: string;
+  audio?: boolean | "optional";
+  mode?: (string | string[])[];
 };
 type ImageFile = { path: string; mimeType: string };
 type OnlineRecord = {
@@ -175,17 +248,34 @@ type OnlineRecord = {
   providerLabel: string;
   modelId: string;
   modelLabel: string;
+  mediaType?: MediaType;
   size?: string;
+  resolution?: string;
+  duration?: number;
+  generateAudio?: boolean;
+  other?: Record<string, unknown>;
   ratio?: string;
   images: ImageFile[];
   references: ImageFile[];
+  audios?: ImageFile[];
+  videoUrls?: string[];
+  referenceOrder?: { type: "image" | "video" | "audio"; index: number }[];
 };
 type ReferenceSlot = { preview: string; path?: string; mimeType?: string; uploading: boolean };
 type ApiResponse<T> = { code: number; data: T; message?: string };
 
 const props = defineProps<{ active: boolean }>();
 const emit = defineEmits<{ openSettings: [] }>();
-const referenceLabels = ["主图", "参考 A", "参考 B"];
+const audioSlots = ref<ReferenceSlot[]>([]);
+const audioInput = ref<HTMLInputElement>();
+const videoUrls = ref<string[]>([]);
+const videoInput = ref<HTMLInputElement>();
+const videoUploading = ref(false);
+let videoUploadController: AbortController | undefined;
+let uploadAsSource = false;
+const videoOperation = ref("generate");
+const sourceVideoUrl = ref("");
+const extensionDuration = ref(-1);
 const counts = [1, 2, 3, 4];
 const pageSize = 24;
 const extensions: Record<string, string> = {
@@ -193,15 +283,25 @@ const extensions: Record<string, string> = {
   "image/avif": "avif", "image/bmp": "bmp", "image/tiff": "tiff",
 };
 const prompt = ref("");
-const promptInput = ref<InputInstance>();
+const promptInput = ref<MentionInstance>();
 const formError = ref("");
 const formErrorKind = ref<"prompt" | "upload" | "model" | "generate" | "">("");
-const models = ref<ImageModel[]>([]);
+const models = ref<MediaModel[]>([]);
 const modelsLoading = ref(false);
 const modelsError = ref("");
 const providerId = ref("");
 const modelId = ref("");
+const mediaType = ref<MediaType>("image");
+const mediaLabel = computed(() => mediaType.value === "video" ? "视频" : "图片");
 const size = ref("");
+const resolution = ref("");
+const duration = ref<number>();
+const generateAudio = ref(false);
+const other = ref<Record<string, unknown>>({});
+const selectedResolution = computed({
+  get: () => mediaType.value === "video" ? resolution.value : size.value,
+  set: value => { if (mediaType.value === "video") resolution.value = value; else size.value = value; },
+});
 const ratio = ref("");
 const count = ref(1);
 const slots = ref<(ReferenceSlot | null)[]>([null, null, null]);
@@ -227,23 +327,59 @@ let inputDirectoryReady = false;
 let historyVersion = 0;
 let disposed = false;
 
+const typeModels = computed(() => models.value.filter(model => model.type === mediaType.value && model.providerId === "developCc"));
 const providers = computed(() => {
   const groups = new Map<string, { providerId: string; providerLabel: string }>();
-  for (const model of models.value) if (!groups.has(model.providerId)) groups.set(model.providerId, { providerId: model.providerId, providerLabel: model.providerLabel });
+  for (const model of typeModels.value) if (!groups.has(model.providerId)) groups.set(model.providerId, { providerId: model.providerId, providerLabel: model.providerLabel });
   return [...groups.values()];
 });
-const providerModels = computed(() => models.value.filter(model => model.providerId === providerId.value));
+const providerModels = computed(() => typeModels.value.filter(model => model.providerId === providerId.value));
 const currentModel = computed(() => providerModels.value.find(model => model.modelId === modelId.value));
 const sizeOptions = computed(() => {
   const sizes = currentModel.value?.imageSizes?.length ? currentModel.value.imageSizes : ["2K"];
   return [...sizes].sort((left, right) => (Number.parseFloat(left) || Infinity) - (Number.parseFloat(right) || Infinity));
 });
-const ratioOptions = computed(() => currentModel.value?.imageRatios?.length ? currentModel.value.imageRatios : ["1:1"]);
-const uploading = computed(() => slots.value.some(slot => slot?.uploading));
-const visibleHistory = computed(() => history.value.slice(0, historyVisible.value));
-const allSelected = computed(() => history.value.length > 0 && history.value.every(item => selectedIds.value.includes(item.id)));
+const durationOptions = computed(() => [...new Set(currentModel.value?.durationResolutionMap?.flatMap(item => item.duration) ?? [])].sort((left, right) => left - right));
+const resolutionOptions = computed(() => [...new Set(currentModel.value?.durationResolutionMap?.filter(item => duration.value !== undefined && item.duration.includes(duration.value)).flatMap(item => item.resolution) ?? [])]);
+const ratioOptions = computed(() => mediaType.value === "video" ? currentModel.value?.videoRatios ?? [] : currentModel.value?.imageRatios?.length ? currentModel.value.imageRatios : ["1:1"]);
+const supportsEditing = computed(() => mediaType.value === "video" && currentModel.value?.modelId === "seedance-2.5");
+const modifyingVideo = computed(() => supportsEditing.value && videoOperation.value !== "generate");
+const referenceLimits = computed(() => {
+  const limits = { image: mediaType.value === "image" ? currentModel.value?.imageReferences ?? 0 : 0, video: 0, audio: 0 };
+  if (mediaType.value === "video") for (const mode of currentModel.value?.mode ?? []) {
+    if (!Array.isArray(mode)) continue;
+    for (const item of mode) {
+      const match = /^(image|video|audio)Reference:(\d+)$/.exec(item);
+      if (match) limits[match[1] as keyof typeof limits] = Number(match[2]);
+    }
+  }
+  return limits;
+});
+const imageSlots = computed(() => slots.value.filter((slot): slot is ReferenceSlot => !!slot));
+const referenceLabels = computed(() => Array.from({ length: Math.min(referenceLimits.value.image, Math.max(3, slots.value.length + (slots.value.every(Boolean) ? 1 : 0))) }, (_, index) => `图片${index + 1}`));
+const referencesAllowed = computed(() => referenceLimits.value.image > 0);
+const mentionOptions = computed(() => [
+  ...slots.value.flatMap((slot, index) => slot?.path ? [{ value: `图片${index + 1}` }] : []),
+  ...(mediaType.value === "video" ? [
+    ...(!modifyingVideo.value ? videoUrls.value.flatMap((url, index) => url.trim() ? [{ value: `视频${index + 1}` }] : []) : []),
+    ...audioSlots.value.flatMap((slot, index) => slot.path ? [{ value: `音频${index + 1}` }] : []),
+  ] : []),
+]);
+const uploading = computed(() => slots.value.some(slot => slot?.uploading) || audioSlots.value.some(slot => slot.uploading));
+const filteredHistory = computed(() => history.value.filter(item => (item.mediaType ?? "image") === mediaType.value));
+const visibleHistory = computed(() => filteredHistory.value.slice(0, historyVisible.value));
+const allSelected = computed(() => filteredHistory.value.length > 0 && filteredHistory.value.every(item => selectedIds.value.includes(item.id)));
 
-watch(currentModel, () => syncSize(), { flush: "sync" });
+watch(currentModel, () => { other.value = {}; syncSize(); }, { flush: "sync" });
+watch(duration, syncSize, { flush: "sync" });
+watch(mediaType, () => {
+  exitManage();
+  historyVisible.value = pageSize;
+  formError.value = "";
+  formErrorKind.value = "";
+  if (!providers.value.some(item => item.providerId === providerId.value)) providerId.value = providers.value[0]?.providerId ?? "";
+  selectProvider();
+}, { flush: "sync" });
 watch(prompt, () => {
   if (formErrorKind.value === "model") return;
   formErrorKind.value = "";
@@ -257,7 +393,9 @@ watch(() => props.active, active => {
 onUnmounted(() => {
   disposed = true;
   generationController?.abort();
+  videoUploadController?.abort();
   slots.value.forEach(clearPreview);
+  audioSlots.value.forEach(clearPreview);
 });
 
 function assetUrl(path: string) {
@@ -270,7 +408,12 @@ function requestError(error: unknown, fallback: string) {
 }
 
 function syncSize() {
-  if (!sizeOptions.value.includes(size.value)) size.value = sizeOptions.value[0] ?? "";
+  if (mediaType.value === "video") {
+    const model = currentModel.value;
+    if (!durationOptions.value.includes(duration.value!)) duration.value = durationOptions.value.includes(model?.defaultDuration!) ? model?.defaultDuration : durationOptions.value[0];
+    if (!resolutionOptions.value.includes(resolution.value)) resolution.value = resolutionOptions.value.includes(model?.defaultResolution ?? "") ? model!.defaultResolution! : resolutionOptions.value[0] ?? "";
+    if (model?.audio !== "optional") generateAudio.value = model?.audio === true;
+  } else if (!sizeOptions.value.includes(size.value)) size.value = sizeOptions.value[0] ?? "";
   if (!ratioOptions.value.includes(ratio.value)) ratio.value = ratioOptions.value.includes("1:1") ? "1:1" : ratioOptions.value.includes("16:9") ? "16:9" : ratioOptions.value[0] ?? "";
 }
 
@@ -283,15 +426,15 @@ async function loadModels() {
   modelsLoading.value = true;
   modelsError.value = "";
   try {
-    const { data } = await axios.get<ApiResponse<ImageModel[]>>("/api/ai/media/models");
+    const { data } = await axios.get<ApiResponse<MediaModel[]>>("/api/ai/media/models");
     if (disposed) return;
-    if (data.code !== 200 || !Array.isArray(data.data)) throw new Error(data.message || "读取图片模型失败");
-    models.value = data.data.filter(model => model.type === "image");
+    if (data.code !== 200 || !Array.isArray(data.data)) throw new Error(data.message || "读取媒体模型失败");
+    models.value = data.data.filter(model => model.type === "image" || model.type === "video");
     if (generating.value) return;
     if (!providers.value.some(item => item.providerId === providerId.value)) providerId.value = providers.value[0]?.providerId ?? "";
     selectProvider();
   } catch (error) {
-    if (!disposed) modelsError.value = requestError(error, "读取图片模型失败");
+    if (!disposed) modelsError.value = requestError(error, "读取媒体模型失败");
   } finally {
     modelsLoading.value = false;
   }
@@ -306,8 +449,8 @@ async function loadHistory() {
     if (disposed || version !== historyVersion) return;
     if (data.code !== 200 || !Array.isArray(data.data)) throw new Error(data.message || "读取历史失败");
     history.value = data.data;
-    selectedIds.value = selectedIds.value.filter(id => data.data.some(item => item.id === id));
-    if (!history.value.length) exitManage();
+    selectedIds.value = selectedIds.value.filter(id => filteredHistory.value.some(item => item.id === id));
+    if (!filteredHistory.value.length) exitManage();
   } catch (error) {
     if (!disposed && version === historyVersion) historyError.value = requestError(error, "读取历史失败");
   } finally {
@@ -325,6 +468,7 @@ function clearReference(index: number) {
 }
 
 function pickReference(index: number) {
+  if (generating.value || !referencesAllowed.value) return;
   pickIndex.value = index;
   fileInput.value?.click();
 }
@@ -337,7 +481,7 @@ function selectReference(event: Event) {
 }
 
 function dragOver(index: number, event: DragEvent) {
-  if (!event.dataTransfer?.types.includes("Files") || generating.value) return;
+  if (!event.dataTransfer?.types.includes("Files") || generating.value || !referencesAllowed.value) return;
   event.preventDefault();
   dragIndex.value = index;
 }
@@ -352,20 +496,20 @@ function dropReference(index: number, event: DragEvent) {
   if (!event.dataTransfer?.types.includes("Files")) return;
   event.preventDefault();
   dragIndex.value = -1;
-  if (generating.value) return;
+  if (generating.value || !referencesAllowed.value) return;
   const file = [...event.dataTransfer.files].find(item => item.type.startsWith("image/"));
   if (!file) return void ElMessage.warning("请拖入图片文件");
   void putFile(file, index);
 }
 
 function onPaste(event: ClipboardEvent) {
-  if (!props.active || generating.value) return;
+  if (!props.active || generating.value || !referencesAllowed.value) return;
   const target = event.target;
   if (target instanceof Element && (target.closest(".el-overlay") || target.closest("input, textarea, [contenteditable='true']"))) return;
   const file = [...(event.clipboardData?.files ?? [])].find(item => item.type.startsWith("image/"));
   if (!file) return;
   const index = slots.value.findIndex(slot => !slot);
-  void putFile(file, index < 0 ? 0 : index);
+  void putFile(file, index < 0 ? slots.value.length : index);
 }
 
 async function ensureInputDirectory() {
@@ -380,6 +524,8 @@ async function ensureInputDirectory() {
 }
 
 async function putFile(file: File, index: number) {
+  if (generating.value || !referencesAllowed.value) return;
+  if (index >= referenceLimits.value.image) return void ElMessage.warning(`当前模型最多支持 ${referenceLimits.value.image} 张参考图片`);
   const rawType = file.type.split(";")[0]!.trim().toLowerCase();
   const mimeType = rawType === "image/jpg" ? "image/jpeg" : rawType;
   const extension = extensions[mimeType];
@@ -401,6 +547,79 @@ async function putFile(file: File, index: number) {
   }
 }
 
+function removeAudio(index: number) {
+  clearPreview(audioSlots.value[index] ?? null);
+  audioSlots.value.splice(index, 1);
+}
+
+async function selectAudio(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file || generating.value || audioSlots.value.length >= referenceLimits.value.audio) return;
+  const audioExtensions: Record<string, string> = { "audio/mpeg": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/ogg": "ogg", "audio/webm": "webm", "audio/flac": "flac", "audio/aac": "aac", "audio/mp4": "m4a" };
+  const extension = audioExtensions[file.type];
+  if (!extension || !file.size || file.size > 50 * 1024 * 1024) return void ElMessage.warning("请上传不超过 50 MB 的 MP3、WAV、OGG、WebM、FLAC、AAC 或 M4A 音频");
+  const preview = URL.createObjectURL(file);
+  audioSlots.value.push({ preview, uploading: true });
+  try {
+    await ensureInputDirectory();
+    const path = `在线生图/input/ref${crypto.randomUUID()}.${extension}`;
+    await axios.put("/api/assets/save", file, { params: { path }, headers: { "Content-Type": "application/octet-stream" } });
+    const slot = audioSlots.value.find(item => item.preview === preview);
+    if (disposed || !slot) return void URL.revokeObjectURL(preview);
+    Object.assign(slot, { path, mimeType: file.type === "audio/x-wav" ? "audio/wav" : file.type, uploading: false });
+  } catch (error) {
+    const index = audioSlots.value.findIndex(item => item.preview === preview);
+    if (index >= 0) removeAudio(index);
+    if (!disposed) ElMessage.error(requestError(error, "参考音频上传失败"));
+  }
+}
+
+function pickVideo(asSource: boolean) {
+  if (generating.value || videoUploading.value) return;
+  uploadAsSource = asSource;
+  videoInput.value?.click();
+}
+
+async function selectVideo(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file || generating.value || videoUploading.value) return;
+  if (!/\.(mp4|mov|webm)$/i.test(file.name) || !file.size || file.size > 100 * 1024 * 1024) {
+    return void ElMessage.warning("请上传不超过 100 MB 的 MP4、MOV 或 WebM 视频");
+  }
+  const asSource = uploadAsSource;
+  const selectedModel = modelId.value;
+  const selectedOperation = videoOperation.value;
+  const selectedType = mediaType.value;
+  if (!asSource && videoUrls.value.length >= referenceLimits.value.video) return;
+  const controller = new AbortController();
+  videoUploadController = controller;
+  videoUploading.value = true;
+  try {
+    const { data } = await axios.post<ApiResponse<{ url: string; expiresAt: number }>>("/api/onlineImage/uploadVideo", file, {
+      headers: { "Content-Type": "application/octet-stream" }, signal: controller.signal,
+    });
+    if (disposed || controller.signal.aborted) return;
+    if (data.code !== 200 || !data.data?.url) throw new Error(data.message || "视频上传失败");
+    if (selectedModel !== modelId.value || selectedOperation !== videoOperation.value || selectedType !== mediaType.value) {
+      ElMessage.warning("视频已上传，但生成设置已切换，请在当前设置下重新选择视频");
+      return;
+    }
+    if (asSource) sourceVideoUrl.value = data.data.url;
+    else if (videoUrls.value.length < referenceLimits.value.video) videoUrls.value.push(data.data.url);
+  } catch (error) {
+    if (!disposed && !controller.signal.aborted) ElMessage.error(requestError(error, "Litterbox 视频上传失败，请稍后重试"));
+  } finally {
+    if (videoUploadController === controller) {
+      videoUploadController = undefined;
+      videoUploading.value = false;
+    }
+  }
+}
+
 function cancel() {
   generationController?.abort();
 }
@@ -411,12 +630,12 @@ async function submit() {
   if (!trimmed) {
     formErrorKind.value = "prompt";
     formError.value = "请输入提示词";
-    promptInput.value?.focus();
+    promptInput.value?.input?.focus();
     return;
   }
-  if (uploading.value) {
+  if (uploading.value || videoUploading.value) {
     formErrorKind.value = "upload";
-    formError.value = "参考图还在上传，请稍候再点生成。";
+    formError.value = "参考素材还在上传，请稍候再点生成。";
     return;
   }
   const model = currentModel.value;
@@ -428,13 +647,66 @@ async function submit() {
   formErrorKind.value = "";
   formError.value = "";
   const images = slots.value.flatMap(slot => slot?.path && slot.mimeType ? [{ path: slot.path, mimeType: slot.mimeType }] : []);
+  const type = mediaType.value;
+  const audios = type === "video" ? audioSlots.value.flatMap(slot => slot.path && slot.mimeType ? [{ path: slot.path, mimeType: slot.mimeType }] : []) : [];
+  const videos = type === "video" && !modifyingVideo.value ? videoUrls.value.map(url => url.trim()) : [];
+  if (images.length > referenceLimits.value.image || audios.length > referenceLimits.value.audio || videos.length > referenceLimits.value.video) {
+    formError.value = "参考素材数量超过当前模型上限，请移除多余素材。";
+    return;
+  }
+  if (videos.some(url => !/^https?:\/\//i.test(url)) || (modifyingVideo.value && !/^https?:\/\//i.test(sourceVideoUrl.value.trim()))) {
+    formError.value = "请填写可公开下载的视频 HTTP(S) 直链。";
+    return;
+  }
+  const referenceOrder: { type: "image" | "video" | "audio"; index: number }[] = [];
+  let invalidMention = false;
+  const submittedPrompt = trimmed.replace(/@(图片|视频|音频)(\d+)/g, (marker, kind: string, number: string) => {
+    const index = Number(number) - 1;
+    const referenceType = kind === "图片" ? "image" : kind === "视频" ? "video" : "audio";
+    const itemIndex = referenceType === "image" ? slots.value.slice(0, index).filter(slot => slot?.path).length : index;
+    const available = referenceType === "image" ? !!slots.value[index]?.path : referenceType === "video" ? !!videos[index] : !!audios[index];
+    if (!available) { invalidMention = true; return marker; }
+    if (type === "image") return `@图片${itemIndex + 1}`;
+    referenceOrder.push({ type: referenceType, index: itemIndex });
+    return `{{ref ${referenceOrder.length}}}`;
+  });
+  if (invalidMention) { formError.value = "提示词引用的素材不存在，请重新输入 @ 选择。"; return; }
+  const videoMode = type === "video" ? model.mode?.find(mode => {
+    if (Array.isArray(mode)) return (images.length + videos.length + audios.length > 0 || modifyingVideo.value) && [
+      ["image", images.length], ["video", videos.length], ["audio", audios.length],
+    ].every(([kind, total]) => Number(total) <= Number(mode.find(item => item.startsWith(`${kind}Reference:`))?.split(":")[1] ?? 0));
+    if (mode === "text") return images.length + videos.length + audios.length === 0 && !modifyingVideo.value;
+    if (mode === "singleImage") return images.length === 1;
+    if (mode === "startEndRequired") return images.length === 2;
+    return ["endFrameOptional", "startFrameOptional"].includes(mode) && images.length >= 1 && images.length <= 2;
+  }) : undefined;
+  if (type === "video" && videoMode === undefined) {
+    formErrorKind.value = "model";
+    formError.value = "参考素材不符合当前视频模型的模式，请调整素材或更换模型。";
+    return;
+  }
+  if (type === "video" && ((durationOptions.value.length > 0 && !durationOptions.value.includes(duration.value!))
+    || (resolutionOptions.value.length > 0 && !resolutionOptions.value.includes(resolution.value))
+    || (ratioOptions.value.length > 0 && !ratioOptions.value.includes(ratio.value)))) {
+    formErrorKind.value = "model";
+    formError.value = "请按当前模型能力选择时长、分辨率和比例。";
+    return;
+  }
   const controller = new AbortController();
   generationController = controller;
   generating.value = true;
   try {
     const { data } = await axios.post<ApiResponse<OnlineRecord>>("/api/onlineImage/generate", {
-      prompt: trimmed, providerId: model.providerId, modelId: model.modelId,
-      size: size.value, ratio: ratio.value, n: count.value, ...(images.length ? { images } : {}),
+      prompt: submittedPrompt, providerId: model.providerId, modelId: model.modelId, mediaType: type,
+      ...(ratio.value ? { ratio: ratio.value } : {}),
+      ...(type === "video" ? {
+        ...(resolution.value ? { resolution: resolution.value } : {}),
+        ...(duration.value !== undefined ? { duration: duration.value } : {}),
+        ...(model.audio !== undefined ? { generateAudio: generateAudio.value } : {}),
+        n: 1, mode: videoMode, audios, videoUrls: videos, referenceOrder,
+        other: { ...other.value, ...(supportsEditing.value ? { videoOperation: videoOperation.value, ...(modifyingVideo.value ? { sourceVideoUrl: sourceVideoUrl.value.trim() } : {}), extensionDuration: extensionDuration.value } : {}) },
+      } : { size: size.value, n: count.value }),
+      ...(images.length ? { images } : {}),
     }, { signal: controller.signal });
     if (controller.signal.aborted || disposed) return;
     if (data.code !== 200 || !data.data?.images?.length) throw new Error(data.message || "生成失败");
@@ -469,7 +741,14 @@ function openHistory(record: OnlineRecord) {
 }
 
 function toggleSelectAll() {
-  selectedIds.value = allSelected.value ? [] : history.value.map(item => item.id);
+  selectedIds.value = allSelected.value ? [] : filteredHistory.value.map(item => item.id);
+}
+
+function readablePrompt(record: OnlineRecord) {
+  return record.prompt.replace(/\{\{ref (\d+)\}\}/g, (marker, number: string) => {
+    const reference = record.referenceOrder?.[Number(number) - 1];
+    return reference ? `@${{ image: "图片", video: "视频", audio: "音频" }[reference.type]}${reference.index + 1}` : marker;
+  });
 }
 
 function openDetail(record: OnlineRecord) {
@@ -477,18 +756,30 @@ function openDetail(record: OnlineRecord) {
 }
 
 function applyRecord(record: OnlineRecord) {
-  prompt.value = record.prompt;
-  const model = models.value.find(item => item.providerId === record.providerId && item.modelId === record.modelId);
+  if (generating.value) return void ElMessage.warning("请先停止当前生成，再使用归档设置");
+  mediaType.value = record.mediaType ?? "image";
+  prompt.value = readablePrompt(record);
+  const model = typeModels.value.find(item => item.providerId === record.providerId && item.modelId === record.modelId);
   if (model) {
     providerId.value = model.providerId;
     modelId.value = model.modelId;
     syncSize();
     if (record.size && sizeOptions.value.includes(record.size)) size.value = record.size;
+    if (record.duration !== undefined && durationOptions.value.includes(record.duration)) duration.value = record.duration;
+    if (record.resolution && resolutionOptions.value.includes(record.resolution)) resolution.value = record.resolution;
     if (record.ratio && ratioOptions.value.includes(record.ratio)) ratio.value = record.ratio;
-  } else ElMessage.warning("原来的图片模型已不可用，请重新选择");
+    if (model.audio === "optional") generateAudio.value = record.generateAudio ?? false;
+    other.value = { ...record.other };
+  } else ElMessage.warning("原来的模型已不可用，请重新选择");
   slots.value.forEach(clearPreview);
-  slots.value = record.references.slice(0, 3).map(file => ({ preview: assetUrl(file.path), path: file.path, mimeType: file.mimeType, uploading: false }));
-  while (slots.value.length < 3) slots.value.push(null);
+  slots.value = (record.references ?? []).map(file => ({ preview: assetUrl(file.path), path: file.path, mimeType: file.mimeType, uploading: false }));
+  while (slots.value.length < Math.min(3, referenceLimits.value.image)) slots.value.push(null);
+  audioSlots.value.forEach(clearPreview);
+  audioSlots.value = (record.audios ?? []).map(file => ({ preview: assetUrl(file.path), path: file.path, mimeType: file.mimeType, uploading: false }));
+  videoUrls.value = [...record.videoUrls ?? []];
+  videoOperation.value = supportsEditing.value && ["edit", "extend"].includes(String(record.other?.videoOperation)) ? String(record.other?.videoOperation) : "generate";
+  sourceVideoUrl.value = typeof record.other?.sourceVideoUrl === "string" ? record.other.sourceVideoUrl : "";
+  extensionDuration.value = typeof record.other?.extensionDuration === "number" ? record.other.extensionDuration : -1;
   detail.value = undefined;
 }
 
@@ -517,13 +808,13 @@ function dropRecords(ids: string[]) {
   selectedIds.value = selectedIds.value.filter(id => !removed.has(id));
   if (result.value && removed.has(result.value.id)) result.value = undefined;
   if (detail.value && removed.has(detail.value.id)) detail.value = undefined;
-  if (!history.value.length) exitManage();
+  if (!filteredHistory.value.length) exitManage();
 }
 
 async function removeSelected() {
-  const ids = selectedIds.value.filter(id => history.value.some(item => item.id === id));
+  const ids = selectedIds.value.filter(id => filteredHistory.value.some(item => item.id === id));
   if (!ids.length || deletingSelected.value) return;
-  const confirmed = await ElMessageBox.confirm(`删除选中的 ${ids.length} 张图片？此操作不可恢复。`, "删除归档", {
+  const confirmed = await ElMessageBox.confirm(`删除选中的 ${ids.length} 条生成记录？此操作不可恢复。`, "删除归档", {
     confirmButtonText: "删除", cancelButtonText: "取消", type: "warning",
   }).then(() => true, () => false);
   if (!confirmed || disposed) return;
@@ -536,11 +827,11 @@ async function removeSelected() {
   if (disposed) return;
   dropRecords(results.flatMap(item => item.status === "fulfilled" ? [item.value] : []));
   const failed = results.filter(item => item.status === "rejected").length;
-  if (failed) ElMessage.error(`${failed} 张删除失败，其余已删除`);
+  if (failed) ElMessage.error(`${failed} 条删除失败，其余已删除`);
 }
 
 async function removeRecord(record: OnlineRecord) {
-  const confirmed = await ElMessageBox.confirm("删除这条记录，并删除对应的本地图片。", "删除生成记录", {
+  const confirmed = await ElMessageBox.confirm("删除这条记录，并删除对应的本地媒体文件。", "删除生成记录", {
     confirmButtonText: "删除", cancelButtonText: "取消", type: "warning",
   }).then(() => true, () => false);
   if (!confirmed || disposed) return;
@@ -562,11 +853,15 @@ onUnmounted(() => {
 
 <style scoped lang="scss">
 .onlineImage {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  container-type: inline-size;
   padding: 28px max(clamp(20px, 4vw, 56px), env(safe-area-inset-right)) calc(48px + env(safe-area-inset-bottom)) max(clamp(20px, 4vw, 56px), env(safe-area-inset-left));
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 
-  button:focus-visible:not(.el-button) {
+  button:focus-visible:not(.el-button), .historyPreview:focus-visible {
     outline: 2px solid var(--el-color-primary);
     outline-offset: 2px;
   }
@@ -582,14 +877,19 @@ onUnmounted(() => {
     p { margin: 0; color: var(--el-text-color-secondary); font-size: 13px; text-wrap: pretty; }
   }
 
+  .mediaTabs { margin-bottom: 20px; }
+
   .studio {
     display: grid;
-    grid-template-columns: minmax(280px, 440px) minmax(0, 1fr);
+    min-width: 0;
+    grid-template-columns: minmax(320px, 460px) minmax(0, 1fr);
     gap: 24px;
     align-items: start;
   }
 
   .controls, .stage, .historyCard, .referenceSlot {
+    min-width: 0;
+    box-sizing: border-box;
     border: 1px solid var(--el-border-color-lighter);
     border-radius: 18px;
     background: color-mix(in srgb, var(--el-bg-color) 88%, transparent);
@@ -612,6 +912,14 @@ onUnmounted(() => {
     font-weight: 600;
 
     .el-select { width: 100%; }
+
+    :deep(.el-textarea__inner) {
+      padding: 14px 16px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 400;
+      line-height: 1.8;
+    }
   }
 
   .references {
@@ -677,6 +985,17 @@ onUnmounted(() => {
     }
   }
 
+  .referenceRow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+
+    .el-input { flex: 1; min-width: 0; }
+    audio { flex: 1; width: 0; min-width: 0; height: 32px; }
+    .el-button { margin: 0; }
+  }
+
   .options {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -730,8 +1049,11 @@ onUnmounted(() => {
     &:hover { opacity: 0.92; }
   }
 
+  .stageVideo { display: block; width: 100%; max-height: 640px; border-radius: 14px; }
+
   .stageThumbs {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 12px;
 
@@ -790,7 +1112,7 @@ onUnmounted(() => {
     content-visibility: auto;
     contain-intrinsic-size: 160px 160px;
 
-    > button:first-child {
+    .historyPreview {
       position: relative;
       display: block;
       width: 100%;
@@ -803,7 +1125,19 @@ onUnmounted(() => {
       img { width: 100%; height: 100%; object-fit: cover; }
     }
 
-    &.managing > button:first-child { cursor: pointer; }
+    .videoArchive {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--el-fill-color-light);
+
+      video { width: 100%; min-height: 0; flex: 1; object-fit: contain; }
+      .el-button { margin: 0; }
+    }
+
+    &.managing .historyPreview { cursor: pointer; }
+    &:has(.videoArchive) { aspect-ratio: 4 / 3; }
+    &:has(.videoArchive) .historyPrompt { display: none; }
 
     &.selected { box-shadow: inset 0 0 0 2px var(--el-text-color-primary); }
 
@@ -888,12 +1222,24 @@ onUnmounted(() => {
 
   .referenceSlot button:focus-visible,
   .historyCard button:focus-visible,
+  .historyPreview:focus-visible,
   .stageImage:focus-visible,
   .stageThumbs button:focus-visible {
     outline-offset: -2px;
   }
 
   .loadMore { margin-top: 8px; }
+
+  @container (max-width: 760px) {
+    .studio { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .stage { min-height: 220px; }
+    .pageHeader, .historyHeader { flex-wrap: wrap; }
+  }
+
+  @container (max-width: 360px) {
+    .options { grid-template-columns: minmax(0, 1fr); }
+    .historyGrid { grid-template-columns: minmax(0, 1fr); }
+  }
 
   @media (max-width: 900px) {
     padding: 16px max(16px, env(safe-area-inset-right)) calc(28px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
@@ -920,6 +1266,7 @@ onUnmounted(() => {
     gap: 8px;
 
     .el-image { height: 280px; border-radius: 12px; background: var(--el-fill-color-light); }
+    video { width: 100%; max-height: 520px; border-radius: 12px; background: var(--el-fill-color-light); }
   }
 
   .detailPrompt { margin: 14px 0 6px; white-space: pre-wrap; }

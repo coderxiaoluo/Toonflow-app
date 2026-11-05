@@ -3,9 +3,10 @@ import { z } from "zod";
 import { validateFields } from "@/lib/middleware";
 import { errorFromCause, success } from "@/lib/responseFormat";
 import u from "@/utils";
-import type { GeneratedMedia } from "@toonflow/tools-scaffold/runtime";
+import { videoGenerationSchema } from "@/utils/media/schemas";
+import type { GeneratedMedia, MediaGenerationRequest } from "@toonflow/tools-scaffold/runtime";
 
-// ACT: 出图写入同一个素材目录，目录锁不能并发。请求在单进程里排队。
+// ACT: 所有生成共用素材目录，单进程串行归档；进程重启不恢复排队请求。
 let generationQueue = Promise.resolve();
 function enqueue<T>(task: () => Promise<T>) {
   const result = generationQueue.then(task, task);
@@ -17,16 +18,33 @@ const reference = z.strictObject({
   path: z.string().regex(u.onlineImage.onlineReferencePath),
   mimeType: z.string().regex(u.onlineImage.onlineReferenceMime),
 });
-
-export default Router().post("/", validateFields({
+const fields = {
   prompt: z.string().trim().min(1).max(20000),
   providerId: z.string().regex(/^[a-z][a-zA-Z0-9]{0,95}$/),
   modelId: z.string().trim().min(1).max(256),
+  mediaType: z.enum(["image", "video"]).optional(),
   size: z.string().trim().min(1).max(64).optional(),
-  ratio: z.string().regex(/^[1-9]\d{0,3}:[1-9]\d{0,3}$/).optional(),
+  ratio: videoGenerationSchema.shape.ratio,
   n: z.number().int().min(1).max(4).optional(),
-  images: z.array(reference).max(3).optional(),
-}), async (req, res) => {
+  images: z.array(reference).max(64).optional(),
+  audios: z.array(z.strictObject({
+    path: z.string().regex(u.onlineImage.onlineAudioReferencePath),
+    mimeType: z.string().regex(u.onlineImage.onlineAudioReferenceMime),
+  })).max(64).optional(),
+  videoUrls: z.array(z.string().min(1).max(8192)).max(64).optional(),
+  referenceOrder: videoGenerationSchema.shape.referenceOrder,
+  resolution: videoGenerationSchema.shape.resolution,
+  duration: videoGenerationSchema.shape.duration,
+  generateAudio: videoGenerationSchema.shape.generateAudio,
+  mode: videoGenerationSchema.shape.mode,
+  other: z.strictObject({
+    videoOperation: z.enum(["generate", "edit", "extend"]).optional(),
+    sourceVideoUrl: z.string().min(1).max(8192).optional(),
+    extensionDuration: z.union([z.literal(-1), z.number().int().min(4).max(30)]).optional(),
+  }).optional(),
+};
+
+export default Router().post("/", validateFields(fields), async (req, res) => {
   const controller = new AbortController();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   const close = () => { clearInterval(heartbeat); controller.abort(); };
@@ -34,51 +52,61 @@ export default Router().post("/", validateFields({
   req.once("aborted", close);
   req.socket.once("close", close);
   const written: GeneratedMedia[] = [];
-  let saved = false;
   try {
     res.set({ "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });
     res.flushHeaders();
     heartbeat = setInterval(() => { if (!res.destroyed && !res.writableEnded && !res.writableNeedDrain) res.write("\n"); }, 20000);
-    const prompt = req.body.prompt.trim();
-    const modelId = req.body.modelId.trim();
-    const size = typeof req.body.size === "string" ? req.body.size.trim() : undefined;
-    const model = (await u.mediaGeneration.listMediaModels()).find(item => item.providerId === req.body.providerId && item.modelId === modelId && item.type === "image");
-    if (!model) throw Object.assign(new Error("所选图片模型不存在，请重新选择"), { status: 400 });
+    const body = z.object(fields).parse(req.body);
+    const { prompt, modelId, size } = body;
+    const mediaType = body.mediaType ?? "image";
+    const model = (await u.mediaGeneration.listMediaModels()).find(item => item.providerId === body.providerId && item.modelId === modelId && item.type === mediaType);
+    if (!model) throw Object.assign(new Error("所选媒体模型不存在，请重新选择"), { status: 400 });
+    if (mediaType === "image") {
+      if (body.ratio === "adaptive" || body.audios?.length || body.videoUrls?.length || body.referenceOrder?.length || body.other?.videoOperation && body.other.videoOperation !== "generate") {
+        throw Object.assign(new Error("图片生成不支持视频参数"), { status: 400 });
+      }
+      if (model.imageReferences !== undefined && (body.images?.length ?? 0) > model.imageReferences) {
+        throw Object.assign(new Error(`当前模型最多支持 ${model.imageReferences} 张参考图`), { status: 400 });
+      }
+    }
     const directory = await u.assets.getAssetsDirectory();
-    const request = {
-      providerId: req.body.providerId, modelId, prompt, outputDirectory: u.onlineImage.onlineOutputDirectory,
-      ...(size ? { size } : {}),
-      ...(req.body.ratio ? { ratio: req.body.ratio } : {}),
-      ...(req.body.images?.length ? { images: req.body.images } : {}),
+    const request: MediaGenerationRequest = {
+      providerId: body.providerId, modelId, prompt, outputDirectory: u.onlineImage.onlineOutputDirectory,
+      size, ratio: body.ratio, images: body.images,
+      ...(mediaType === "video" ? {
+        audios: body.audios, referenceOrder: body.referenceOrder, resolution: body.resolution,
+        duration: body.duration, generateAudio: body.generateAudio, mode: body.mode,
+        other: { ...body.other, referenceVideoUrls: body.videoUrls ?? [] },
+      } : {}),
     };
     const record = await enqueue(async () => {
-      for (let index = 0; index < (req.body.n ?? 1); index += 1) {
+      for (let index = 0; index < (body.n ?? 1); index += 1) {
         controller.signal.throwIfAborted();
-        const files = await u.mediaGeneration.generateMedia(directory, "image", request, controller.signal);
+        const files = await u.mediaGeneration.generateMedia(directory, mediaType, request, controller.signal);
         written.push(...files);
         if (files.some(file => !u.onlineImage.onlineOutputPath.test(file.path))) throw new Error("生成结果路径无效");
       }
       const created = {
-        id: crypto.randomUUID(), createdAt: Date.now(), prompt,
+        id: crypto.randomUUID(), createdAt: Date.now(), prompt, mediaType,
         providerId: model.providerId, providerLabel: (model.providerLabel.trim() || model.providerId).slice(0, 256),
         modelId: model.modelId, modelLabel: (model.label.trim() || model.modelId).slice(0, 256),
         ...(size ? { size } : {}),
-        ...(req.body.ratio ? { ratio: req.body.ratio } : {}),
+        ...(body.ratio ? { ratio: body.ratio } : {}),
+        ...(mediaType === "video" ? {
+          resolution: body.resolution, duration: body.duration, generateAudio: body.generateAudio,
+          audios: body.audios ?? [], videoUrls: body.videoUrls ?? [], referenceOrder: body.referenceOrder,
+          other: body.other, mode: body.mode,
+        } : {}),
+        // ACT: 沿用 images 作为生成结果集合，旧图片历史与前端字段保持兼容。
         images: written.map(file => ({ path: file.path, mimeType: file.mimeType })),
-        references: req.body.images ?? [],
+        references: body.images ?? [],
       };
       await u.onlineImage.appendOnlineImageHistory(created);
-      saved = true;
       return created;
     });
     if (!res.destroyed) res.write(JSON.stringify(success(record)));
   } catch (err) {
-    if (!saved) {
-      await Promise.all(written.map(async file => {
-        try { await u.assets.removeAsset(file.path); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("在线生图回滚失败", file.path, error); }
-      }));
-    }
+    // ACT: 归档失败保留已生成素材，不调用可能触及线上资源的删除入口。
     if (!res.destroyed) res.write(JSON.stringify(errorFromCause(err)));
   } finally {
     clearInterval(heartbeat);

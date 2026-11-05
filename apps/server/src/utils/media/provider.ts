@@ -1,18 +1,20 @@
 import { t, translateMessage, validationOptions } from "@/lib/i18n";
 
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, unlink, writeAtomicSync } from "@toonflow/file";
+import { lstat, mkdir, readFile, unlink, writeAtomicSync } from "@toonflow/file";
 import { dirname, join } from "node:path";
 import { createContext, SourceTextModule } from "node:vm";
 import type { AudioConvertOptions, Provider, ProviderTaskData, ProviderTools } from "@toonflow/providers";
 import { generateOpenaiImage } from "@toonflow/providers/media/openaiImages";
 import { openaiImagesProtocol } from "@toonflow/providers/media/openaiImagesCatalog";
-import { generateVolcengineVideo, getVolcengineBalance, queryVolcengineBalance } from "@toonflow/providers/media/volcengineArk";
+import { generateVolcengineVideo, getVolcengineBalance } from "@toonflow/providers/media/volcengineArk";
 import { volcengineArkProtocol } from "@toonflow/providers/media/volcengineArkCatalog";
 import { parse, parseExpression } from "@babel/parser";
 import { z } from "zod";
 import conf from "@/utils/conf";
-import { accountProviderSchema, getAccountProvider, getAccountToken } from "@/utils/ai";
+import { developCcApiUrl, developCcProtocol, developCcSource, getDevelopCcApiKey } from "@/utils/media/developCc";
+import { fetchProviderModels } from "@/utils/ai/models";
+import { accountProviderSchema, getAccountToken } from "@/utils/ai";
 import type { ProviderSources } from "@/utils/channel/types";
 import { convertAudio } from "@/utils/media/audioProcessor";
 import { createWorkspaceFfmpeg } from "@/utils/ffmpeg";
@@ -304,20 +306,15 @@ function metadata(fileName: string, source: string) {
     supportsPrice, supportsBalance, revision: createHash("sha256").update(source).digest("hex"), loadError: "" };
 }
 
-export async function queryProtocolBalance(protocol: string, apiUrl: string, apiKey: string) {
-  if (protocol !== volcengineArkProtocol) invalid("不支持的媒体 API 协议");
-  try {
-    return await queryVolcengineBalance({ apiUrl, apiKey, signal: AbortSignal.timeout(20000) });
-  } catch (error) {
-    const status = error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
-    if (status >= 400 && status < 600) throw error;
-    if (error instanceof Error && error.name === "AbortError") invalid("连接超时，请稍后重试", 504);
-    invalid("无法连接接口，请检查 API 地址", 502);
-  }
+export async function queryProtocolBalance(protocol: string, apiUrl: string, _apiKey: string) {
+  if (protocol !== developCcProtocol || apiUrl !== developCcApiUrl) invalid("仅支持 develop.cc 固定地址与协议");
+  // ACT: develop.cc 尚未声明余额协议，不猜测账单接口，也不向其他供应商发送统一密钥。
+  return null;
 }
 
 export function validateMediaProviderSource(source: string) {
   const { id } = parseProvider(source);
+  if (id !== "developCc" || replaceMediaProviderModels(source, []) !== developCcSource) invalid("只能使用内置 develop.cc 供应商");
   return metadata(`${id}.ts`, source);
 }
 
@@ -356,48 +353,36 @@ async function readProvider(path: string, fileName: string) {
 }
 
 export async function getMediaProvider(id: string) {
-  if (!providerIdSchema.safeParse(id).success) invalid("供应商 ID 无效");
-  const path = await directory();
-  if (!path) invalid("请先在媒体模型设置中添加供应商", 404);
-  const current = await readProvider(path, `${id}.ts`).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") invalid("请先在媒体模型设置中添加供应商", 404);
-    throw error;
-  });
-  return { ...metadata(current.fileName, current.source), source: current.source };
+  if (id !== "developCc") invalid("仅支持 develop.cc 供应商");
+  const configured = conf.get("settings.mediaProviderConfigs.developCc.models");
+  let models = configured === undefined ? [] : mediaModelsSchema.parse(configured);
+  if (configured === undefined) {
+    const path = await directory();
+    if (path) {
+      const current = await readProvider(path, "developCc.ts").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (current) models = metadata(current.fileName, current.source).models;
+    }
+  }
+  const source = replaceMediaProviderModels(developCcSource, models);
+  return { ...metadata("developCc.ts", source), source };
 }
 
 export async function getMediaProviderSource(fileName: string) {
-  if (!mediaProviderFileSchema.safeParse(fileName).success) invalid("供应商文件名无效");
-  if (fileName.toLowerCase() === "toonflow.ts") invalid("Toonflow 供应商由账号与余额管理，请在账号页刷新");
-  const path = await directory();
-  if (!path) invalid("供应商文件不存在", 404);
-  return readProvider(path, fileName).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") invalid("供应商文件不存在", 404);
-    throw error;
-  });
+  if (fileName !== "developCc.ts") invalid("仅支持 developCc.ts 供应商");
+  const provider = await getMediaProvider("developCc");
+  return { fileName, id: provider.id, source: provider.source, revision: provider.revision };
 }
 
 export async function listMediaProviders() {
-  const path = await directory();
-  if (!path) return [];
-  const files = await readdir(path, { withFileTypes: true });
-  return Promise.all(files.filter(file => file.isFile() && mediaProviderFileSchema.safeParse(file.name).success)
-    .sort((left, right) => left.name.localeCompare(right.name)).map(async file => {
-      let current = { fileName: file.name, id: file.name.slice(0, -3), source: "", revision: "" };
-      try {
-        current = await readProvider(path, file.name);
-        return metadata(current.fileName, current.source);
-      } catch (error) {
-        // ACT: 元数据损坏不影响其他供应商；仍保留原文版本，允许用户明确删除。
-        const { source, ...file } = current;
-        return { ...file, label: current.id, version: "", readme: "", rules: [], models: [], loadError: translateMessage(error instanceof Error ? error.message : "供应商文件无法读取") };
-      }
-    }));
+  const { source, ...provider } = await getMediaProvider("developCc");
+  return [provider];
 }
 
 export async function addMediaProvider(source: string) {
   const result = validateMediaProviderSource(source);
-  if (result.id.toLowerCase() === "toonflow") invalid("Toonflow 供应商由账号与余额管理，请登录后刷新");
   const { fileName } = result;
   const path = join((await directory(true))!, fileName);
   const release = lockWorkspaceFiles([path]);
@@ -450,65 +435,36 @@ export async function installAccountProvider(sources: ProviderSources, token: st
 }
 
 export async function saveMediaProvider(fileName: string, content: string | z.infer<typeof mediaModelsSchema>, revision: string, expectedApiKey?: string) {
-  if (!mediaProviderFileSchema.safeParse(fileName).success) invalid("供应商文件名无效");
-  if (fileName.toLowerCase() === "toonflow.ts") invalid("Toonflow 供应商由账号与余额管理，请在账号页刷新");
-  const path = await directory();
-  if (!path) invalid("供应商文件不存在", 404);
-  const release = lockWorkspaceFiles([join(path, fileName)]);
-  try {
-    const current = await readProvider(path, fileName);
-    if (current.revision !== revision) invalid("供应商文件已被修改，请刷新页面后再编辑", 409);
-    const source = typeof content === "string" ? content : replaceMediaProviderModels(current.source, content);
-    const result = metadata(fileName, source);
-    if (expectedApiKey !== undefined && getMediaProviderApiKey(result.id) !== expectedApiKey) invalid("供应商配置已变更，请重试", 409);
-    await writeWorkspaceFile(join(path, fileName), source);
-    return result;
-  } finally { release(); }
+  if (fileName !== "developCc.ts") invalid("仅支持 developCc.ts 供应商");
+  const current = await getMediaProvider("developCc");
+  if (current.revision !== revision) invalid("供应商配置已被修改，请刷新页面后再编辑", 409);
+  const source = typeof content === "string" ? content : replaceMediaProviderModels(current.source, content);
+  if (replaceMediaProviderModels(source, []) !== developCcSource) invalid("不能修改 develop.cc 内置供应商代码");
+  const result = metadata(fileName, source);
+  if (expectedApiKey !== undefined && getMediaProviderApiKey(result.id) !== expectedApiKey) invalid("供应商配置已变更，请重试", 409);
+  conf.set("settings.mediaProviderConfigs.developCc.models", result.models);
+  return result;
 }
 
 function getMediaProviderApiKey(id: string) {
-  const value: unknown = conf.get(`settings.mediaProviderConfigs.${id}.apiKey`);
-  return typeof value === "string" ? value.trim().replace(/^Bearer(?:\s+|$)/i, "").trim() : "";
+  if (id !== "developCc") invalid("仅支持 develop.cc 供应商");
+  return getDevelopCcApiKey();
 }
 
 export async function refreshMediaProviderModels(fileName: string, revision: string) {
-  if (!mediaProviderFileSchema.safeParse(fileName).success) invalid("供应商文件名无效");
-  if (fileName.toLowerCase() === "toonflow.ts") invalid("Toonflow 供应商由账号与余额管理，请在账号页刷新");
-  const provider = await getMediaProvider(fileName.slice(0, -3));
-  if (revision !== provider.revision) invalid("供应商文件已被修改，请刷新页面后再获取", 409);
-  if (!provider.modelsUrl) invalid("供应商未配置 modelsUrl");
+  if (fileName !== "developCc.ts") invalid("仅支持 developCc.ts 供应商");
+  const provider = await getMediaProvider("developCc");
+  if (revision !== provider.revision) invalid("供应商配置已被修改，请刷新页面后再获取", 409);
   const apiKey = getMediaProviderApiKey(provider.id);
-  const modelsUrl = new URL(provider.modelsUrl);
-  const response = await fetch(modelsUrl, {
-    headers: { Accept: "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-    signal: AbortSignal.timeout(30000), redirect: "error",
+  const fetched = await fetchProviderModels({ apiUrl: developCcApiUrl, protocol: developCcProtocol, apiKey });
+  const models = fetched.flatMap(model => {
+    const previous = provider.models.find(item => item.id === model.id);
+    const type = model.type ?? previous?.type;
+    if (!type || type === "text") return [];
+    return [{ ...previous, ...model.modelInfo, id: model.id, label: model.label, type }];
   });
-  if (!response.ok) throw new Error(t`获取媒体模型列表失败（HTTP ${response.status}）`);
-  const result = z.object({ data: z.array(mediaModelsSchema.element.partial({ label: true, type: true }).extend({
-    modelInfo: z.object({
-      mode: z.array(z.union([z.string().min(1), z.array(z.string().min(1))])).optional(),
-      audio: z.union([z.literal("optional"), z.boolean()]).optional(),
-      durationResolutionMap: z.array(z.object({ duration: z.array(z.number().positive()), resolution: z.array(z.string().min(1)) })).optional(),
-      imageSizes: z.array(z.string().min(1)).optional(),
-      imageRatios: z.array(z.string().min(1)).optional(),
-    }).catchall(z.json()).optional(),
-  })).max(2000) }).parse(await response.json());
-  if (!result.data.length) throw new Error("未获取到媒体模型，保留原有列表");
-  const requestedType = z.enum(["text", "image", "video", "audio"]).safeParse(modelsUrl.searchParams.get("type"));
-  const models = result.data.map(({ modelInfo, ...model }) => {
-    const id = model.id.trim();
-    const previous = provider.models.find(item => item.id === id);
-    const type = model.type ?? (requestedType.success ? requestedType.data : previous?.type);
-    if (!type) invalid(t`模型 ${id} 缺少 type，请在返回数据或 modelsUrl 的 type 参数中指定`);
-    if (requestedType.success && type !== requestedType.data) invalid(t`模型 ${id} 的 type 与请求类型不一致`);
-    // ACT: modelInfo 覆盖已有能力；缺省字段沿用同名配置，新模型不猜测生成能力。
-    const merged = { ...previous, ...model, ...modelInfo, id, label: model.label ?? previous?.label
-      ?? (typeof model.display_name === "string" ? model.display_name : typeof model.displayName === "string" ? model.displayName : id), type };
-    Reflect.deleteProperty(merged, "modelInfo");
-    return merged;
-  });
-  const types = new Set(models.map(model => model.type));
-  return saveMediaProvider(fileName, [...provider.models.filter(model => !types.has(model.type)), ...models], provider.revision, apiKey);
+  if (!models.length) throw new Error("未获取到媒体模型，保留原有列表");
+  return saveMediaProvider(fileName, models, provider.revision, apiKey);
 }
 
 export async function deleteMediaProvider(fileName: string, revision: string) {
@@ -529,23 +485,15 @@ export async function deleteMediaProvider(fileName: string, revision: string) {
 export async function loadMediaProviderSource(source: string, config: Record<string, unknown> = {}, signal?: AbortSignal, fetchRequest = fetch, cwd?: string,
   saveTaskData?: (data: ProviderTaskData) => Promise<void>) {
   signal?.throwIfAborted();
-  const { id, value } = parseProvider(source);
-  if (id === "toonflow") {
-    const installed = await getMediaProvider(id);
-    if (source !== installed.source || !source.startsWith(accountSourcePrefix)) invalid("只能运行已安装的 Toonflow 账号供应商", 403);
-    const account = getAccountProvider();
-    if (!account) invalid("请先登录 Toonflow 账号并刷新供应商", 401);
-    const accountToken = getAccountToken();
-    const token = value("token");
-    if (token !== undefined && (typeof token !== "string" || !token.trim())) invalid("账号媒体供应商 token 无效");
-    // 导出的媒体 token 用于配置和脱敏；请求实现也可直接使用源码中内嵌的凭据。
-    if (typeof token === "string") config = { ...config, token };
-    const originalFetch = fetchRequest;
-    fetchRequest = Object.assign((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      if (getAccountToken() !== accountToken) invalid("Toonflow 账号已变更，请重新发起请求", 401);
-      return originalFetch(input, init);
-    }, { preconnect: originalFetch.preconnect }) as typeof fetch;
-  }
+  const { id } = parseProvider(source);
+  if (id !== "developCc" || replaceMediaProviderModels(source, []) !== developCcSource) invalid("只能运行应用内置的 develop.cc 供应商", 403);
+  const apiKey = getDevelopCcApiKey();
+  config = { ...config, apiUrl: developCcApiUrl, apiKey };
+  const originalFetch = fetchRequest;
+  fetchRequest = Object.assign((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (getDevelopCcApiKey() !== apiKey) invalid("develop.cc 密钥已变更，请重新发起请求", 409);
+    return originalFetch(input, init);
+  }, { preconnect: originalFetch.preconnect }) as typeof fetch;
   // ACT: VM 只隔离可信供应商的全局上下文；不可信代码需要独立进程等更强隔离。
   const context = createContext({
     Buffer, atob, btoa, URL, URLSearchParams, TextEncoder, TextDecoder, Blob,

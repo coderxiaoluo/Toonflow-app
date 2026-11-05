@@ -2,8 +2,8 @@
   <el-popover v-model:visible="settingsVisible" trigger="click" placement="top-start" width="min(340px, calc(100vw - 24px))" :disabled="disabled" :showArrow="false" :popperStyle="{ padding: '14px' }">
     <template #reference>
       <el-button class="settingsButton" text size="small" :disabled="disabled" :aria-expanded="settingsVisible" aria-label="视频生成设置">
-        <span class="ratioShape" :style="ratioStyle(ratio)" aria-hidden="true" />
-        <span>{{ [ratio, resolution, duration ? `${duration}秒` : ''].filter(Boolean).join(' · ') }}</span>
+        <span v-if="!isSourceVideoOperation" class="ratioShape" :style="ratioStyle(ratio)" aria-hidden="true" />
+        <span>{{ summary }}</span>
         <component :is="settingsVisible ? IconChevronDown : IconChevronUp" :size="14" aria-hidden="true" />
       </el-button>
     </template>
@@ -12,8 +12,29 @@
       <el-select v-if="modes.length" v-model="mode" :disabled="disabled" :teleported="false" aria-label="视频生成模式">
         <el-option v-for="item in modes" :key="item.value" :value="item.value" :label="item.label" />
       </el-select>
-      <div v-if="durations.length || resolutions.length" class="outputOptions">
-        <div v-if="durations.length" class="outputField">
+      <template v-if="isDevelopCcSeedance">
+        <div class="sectionLabel">业务模式</div>
+        <el-select v-model="videoOperation" :disabled="disabled" :teleported="false" aria-label="视频业务模式">
+          <el-option value="generate" label="生成" />
+          <el-option value="edit" label="编辑" />
+          <el-option value="extend" label="延长" />
+        </el-select>
+        <div v-if="isSourceVideoOperation" class="sourceVideoOptions">
+          <div class="sectionLabel">原视频公网 URL</div>
+          <el-input v-model="sourceVideoUrl" :disabled="disabled" placeholder="https://example.com/video.mp4" aria-label="原视频公网 URL" />
+          <p class="operationHint">原视频须为 4–30 秒、可公开访问的 MP4 直链。</p>
+          <template v-if="other.videoOperation === 'extend'">
+            <div class="sectionLabel">新增时长</div>
+            <el-select v-model="extensionDuration" :disabled="disabled" :teleported="false" aria-label="新增视频时长">
+              <el-option :value="-1" label="自动" />
+              <el-option v-for="item in extensionDurations" :key="item" :value="item" :label="`${item}秒`" />
+            </el-select>
+          </template>
+          <p class="operationHint">{{ other.videoOperation === 'edit' ? '编辑保持原视频时长，先按 30 秒预扣，完成后按实际时长结算。' : '延长仅返回新增片段；自动时长先按 30 秒预扣。' }}</p>
+        </div>
+      </template>
+      <div v-if="(!isSourceVideoOperation && durations.length) || resolutions.length" class="outputOptions">
+        <div v-if="!isSourceVideoOperation && durations.length" class="outputField">
           <div class="sectionLabel">时长</div>
           <el-select v-model="duration" :disabled="disabled" :teleported="false" aria-label="视频时长">
             <el-option v-for="item in durations" :key="item" :value="item" :label="`${item}秒`" />
@@ -26,8 +47,8 @@
           </el-select>
         </div>
       </div>
-      <div class="sectionLabel">画面比例</div>
-      <div class="ratioOptions" role="group" aria-label="视频比例">
+      <div v-if="!isSourceVideoOperation" class="sectionLabel">画面比例</div>
+      <div v-if="!isSourceVideoOperation" class="ratioOptions" role="group" aria-label="视频比例">
         <el-button v-for="item in ratios" :key="item" class="ratioButton" :disabled="disabled" :aria-label="`比例 ${item}`" :aria-pressed="ratio === item" @click="ratio = item">
           <span class="ratioContent">
             <span class="ratioShape" :style="ratioStyle(item)" aria-hidden="true" />
@@ -45,8 +66,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { ElButton, ElPopover, ElSelect, ElOption, ElSwitch } from "element-plus";
+import { computed, ref, watch } from "vue";
+import { ElButton, ElInput, ElPopover, ElSelect, ElOption, ElSwitch } from "element-plus";
 import { IconChevronDown, IconChevronUp } from "@tabler/icons-vue";
 import type { NodeMediaModel } from "@toonflow/nodes-scaffold/runtime";
 import modelForm from "@toonflow/node-shared/modelForm";
@@ -59,6 +80,31 @@ const ratio = defineModel<string>("ratio", { required: true });
 const mode = defineModel<string>("mode", { required: true });
 const generateAudio = defineModel<boolean>("generateAudio", { required: true });
 const other = defineModel<Record<string, unknown>>("other", { required: true });
+const isDevelopCcSeedance = computed(() => props.model?.providerId === "developCc" && props.model?.modelId === "seedance-2.5");
+const isSourceVideoOperation = computed(() => isDevelopCcSeedance.value && (other.value.videoOperation === "edit" || other.value.videoOperation === "extend"));
+const videoOperation = computed({
+  get: () => typeof other.value.videoOperation === "string" ? other.value.videoOperation : "generate",
+  set: (value: string) => { other.value.videoOperation = value; },
+});
+const extensionDuration = computed({
+  get: () => typeof other.value.extensionDuration === "number" ? other.value.extensionDuration : -1,
+  set: (value: number) => { other.value.extensionDuration = value; },
+});
+const sourceVideoUrl = computed({
+  get: () => typeof other.value.sourceVideoUrl === "string" ? other.value.sourceVideoUrl : "",
+  set: (value: string) => { other.value.sourceVideoUrl = value; },
+});
+const extensionDurations = Array.from({ length: 27 }, (_, index) => index + 4);
+const summary = computed(() => isSourceVideoOperation.value
+  ? [other.value.videoOperation === "edit" ? "编辑" : "延长", "跟随原视频", resolution.value].filter(Boolean).join(" · ")
+  : [ratio.value, resolution.value, duration.value ? `${duration.value}秒` : ""].filter(Boolean).join(" · "));
+
+watch([isDevelopCcSeedance, () => other.value.videoOperation, () => other.value.extensionDuration], ([enabled]) => {
+  if (!enabled) return;
+  if (other.value.videoOperation == null) other.value.videoOperation = "generate";
+  if (other.value.extensionDuration == null) other.value.extensionDuration = -1;
+}, { immediate: true });
+
 const modeLabels: Record<string, string> = {
   text: "文生视频", singleImage: "单图参考", startEndRequired: "首尾帧必填", endFrameOptional: "尾帧可选", startFrameOptional: "首帧可选",
 };
@@ -113,6 +159,19 @@ function ratioStyle(value: string) {
   }
 
   > .el-select { margin-bottom: 14px; }
+
+  .sourceVideoOptions {
+    margin-bottom: 14px;
+
+    .operationHint {
+      margin: 8px 0 14px;
+      color: var(--el-text-color-secondary);
+      font-size: 12px;
+      line-height: 1.5;
+
+      &:last-child { margin-bottom: 0; }
+    }
+  }
 
   .outputOptions {
     display: flex;

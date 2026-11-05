@@ -1,257 +1,737 @@
 <template>
-  <canvas ref="fogCanvas" class="pixelFog" aria-hidden="true" />
+  <div ref="containerRef" class="microSlats" aria-hidden="true" />
 </template>
 
 <script setup lang="ts">
+import { Mesh, Program, Renderer, RenderTarget, Texture, Triangle } from "ogl";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
-import logoUrl from "@toonflow/assets/logo.svg";
 
-type FogPoint = { x: number; y: number; nx: number; ny: number; ink: number; halo: number; variation: number; pixelIndex: number };
-type LogoMask = { pixels: Uint8ClampedArray; halo: Uint8ClampedArray };
+type SwellPreset = "swell" | "tide" | "storm" | "signal";
+type Rgba = [number, number, number, number];
+interface WaveValues {
+  scale: number;
+  speed: number;
+  direction: number;
+  chop: number;
+  stretch: number;
+  glint: number;
+  contrast: number;
+  perspective: number;
+  fog: number;
+}
+interface MicroSlatsProps extends Partial<WaveValues> {
+  preset?: SwellPreset;
+  color?: string;
+  glintColor?: string;
+  backgroundColor?: string;
+  slatWidth?: number;
+  slatHeight?: number;
+  gap?: number;
+  roundness?: number;
+  interactive?: boolean;
+  cursorStrength?: number;
+  cursorSize?: number;
+  swirl?: number;
+  trail?: number;
+  lean?: number;
+  intro?: boolean;
+  introDuration?: number;
+  paused?: boolean;
+}
+interface Settings extends WaveValues {
+  color: Rgba;
+  glintColor: Rgba;
+  backgroundColor: Rgba;
+  slatWidth: number;
+  slatHeight: number;
+  gap: number;
+  roundness: number;
+  interactive: boolean;
+  cursorStrength: number;
+  cursorSize: number;
+  swirl: number;
+  trail: number;
+  lean: number;
+  intro: boolean;
+  introDuration: number;
+  paused: boolean;
+}
+interface Pair {
+  read: RenderTarget;
+  write: RenderTarget;
+  swap: () => void;
+}
+interface Fluid {
+  width: number;
+  height: number;
+  velocity: Pair;
+  ink: Pair;
+  pressure: Pair;
+  divergence: RenderTarget;
+  curl: RenderTarget;
+}
+type Splat = [number, number, number, number, number | null];
 
-const props = defineProps<{ scrollTop: number }>();
-const fogCanvas = ref<HTMLCanvasElement>();
-const events = new AbortController();
-const maskSize = 320;
-const fogPixelSize = 2;
-const step = 6;
-const pointer = { x: -1000, y: -1000, targetX: -1000, targetY: -1000, strength: 0, targetStrength: 0 };
-let context: CanvasRenderingContext2D | null = null;
-let fogLayer: HTMLCanvasElement;
-let fogContext: CanvasRenderingContext2D | null = null;
-let fogPixels: ImageData;
-let image: HTMLImageElement;
-let logo: LogoMask | undefined;
-let points: FogPoint[] = [];
-let resizeObserver: ResizeObserver;
-let themeObserver: MutationObserver;
-let reducedMotion: MediaQueryList;
-let animationFrame = 0;
-let elapsed = 9;
-let lastFrame = 0;
-let width = 0;
-let height = 0;
-let pixelRatio = 1;
-let inkColor = "";
+const swellPresets: Record<SwellPreset, WaveValues> = {
+  swell: { scale: 1.5, speed: 0.6, direction: 250, chop: 0.55, stretch: 0, glint: 0.7, contrast: 1.25, perspective: 0.55, fog: 0.55 },
+  tide: { scale: 1.3, speed: 0.5, direction: 262, chop: 0.2, stretch: 0.12, glint: 0.45, contrast: 1.1, perspective: 0.5, fog: 0.4 },
+  storm: { scale: 0.55, speed: 1.6, direction: 236, chop: 1, stretch: 0.3, glint: 1.3, contrast: 1.8, perspective: 0.8, fog: 0.35 },
+  signal: { scale: 0.85, speed: 1.2, direction: 180, chop: 0.6, stretch: 0.85, glint: 0.25, contrast: 1.2, perspective: 0, fog: 0 },
+};
+const fluidSize = 96;
+const pressureSteps = 16;
+const splatForce = 6900;
+const splashJets = 3;
+const pixelBudget = 4.5e6;
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-function sampleLogo(): LogoMask | undefined {
-  const mask = document.createElement("canvas");
-  mask.width = mask.height = maskSize;
-  const maskContext = mask.getContext("2d", { willReadFrequently: true });
-  if (!maskContext) return;
-  maskContext.drawImage(image, 0, 0, maskSize, maskSize);
-  let pixels = maskContext.getImageData(0, 0, maskSize, maskSize).data;
-  let left = maskSize;
-  let top = maskSize;
-  let right = 0;
-  let bottom = 0;
-  for (let y = 0; y < maskSize; y++) {
-    for (let x = 0; x < maskSize; x++) {
-      if (pixels[(y * maskSize + x) * 4 + 3]! < 96) continue;
-      left = Math.min(left, x);
-      top = Math.min(top, y);
-      right = Math.max(right, x);
-      bottom = Math.max(bottom, y);
-    }
-  }
-  if (right < left || bottom < top) return;
-  const scale = Math.min((maskSize - 44) / (right - left + 1), (maskSize - 44) / (bottom - top + 1));
-  const logoWidth = (right - left + 1) * scale;
-  const logoHeight = (bottom - top + 1) * scale;
-  maskContext.clearRect(0, 0, maskSize, maskSize);
-  maskContext.drawImage(image, left / maskSize * image.naturalWidth, top / maskSize * image.naturalHeight,
-    (right - left + 1) / maskSize * image.naturalWidth, (bottom - top + 1) / maskSize * image.naturalHeight,
-    (maskSize - logoWidth) / 2, (maskSize - logoHeight) / 2, logoWidth, logoHeight);
-  pixels = maskContext.getImageData(0, 0, maskSize, maskSize).data;
-  const blurred = document.createElement("canvas");
-  blurred.width = blurred.height = maskSize;
-  const blurredContext = blurred.getContext("2d");
-  if (!blurredContext) return;
-  blurredContext.filter = "blur(7px)";
-  blurredContext.drawImage(mask, 0, 0);
-  return { pixels, halo: blurredContext.getImageData(0, 0, maskSize, maskSize).data };
+function parseColor(value: string, fallback: Rgba): Rgba {
+  const context = document.createElement("canvas").getContext("2d");
+  if (!context || !CSS.supports("color", value)) return fallback;
+  context.fillStyle = value;
+  context.fillRect(0, 0, 1, 1);
+  const pixel = context.getImageData(0, 0, 1, 1).data;
+  return [pixel[0]! / 255, pixel[1]! / 255, pixel[2]! / 255, pixel[3]! / 255];
 }
 
-function resize() {
-  const canvas = fogCanvas.value;
-  if (!canvas || !context || !logo) return;
-  width = canvas.clientWidth;
-  height = canvas.clientHeight;
-  if (!width || !height) return syncAnimation();
-  pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
-  canvas.width = Math.round(width * pixelRatio);
-  canvas.height = Math.round(height * pixelRatio);
-  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  context.imageSmoothingEnabled = false;
-  fogLayer.width = Math.ceil(width / fogPixelSize);
-  fogLayer.height = Math.ceil(height / fogPixelSize);
-  fogPixels = fogContext!.createImageData(fogLayer.width, fogLayer.height);
-  // ACT: 颗粒和点距都按 CSS 像素固定，点数随可视面积变化，避免窗口大小改变疏密。
-  points = [];
-  for (let x = step / 2; x < width; x += step) {
-    for (let y = step / 2; y < height; y += step) {
-      const seed = Math.sin(x * 18.23 + y * 73.17) * 43758.55;
-      points.push({ x, y, nx: x / width, ny: y / height, ink: 0,
-        halo: 0, variation: 0.82 + (seed - Math.floor(seed)) * 0.18,
-        pixelIndex: (Math.floor(y / fogPixelSize) * fogLayer.width + Math.floor(x / fogPixelSize)) * 4 + 3 });
-    }
-  }
-  updateScrollPoints();
-  syncAnimation();
+const passVertex = `#version 300 es
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); }
+`;
+const fluidVertex = `#version 300 es
+in vec2 position;
+uniform vec2 uTexel;
+out vec2 vUv;
+out vec2 vL;
+out vec2 vR;
+out vec2 vT;
+out vec2 vB;
+void main() {
+  vUv = position * 0.5 + 0.5;
+  vL = vUv - vec2(uTexel.x, 0.0);
+  vR = vUv + vec2(uTexel.x, 0.0);
+  vT = vUv + vec2(0.0, uTexel.y);
+  vB = vUv - vec2(0.0, uTexel.y);
+  gl_Position = vec4(position, 0.0, 1.0);
 }
-
-function updateScrollPoints() {
-  if (!logo || !width || !height) return;
-  const logoSize = Math.min(height * 0.86, width * 0.82, 560);
-  const logoX = width * (width < 600 ? 0.53 : 0.76);
-  const logoY = height * 0.45;
-  for (const point of points) {
-    const contentY = point.y + props.scrollTop;
-    point.ny = contentY / height;
-    const maskX = Math.floor((point.x - logoX) / logoSize * maskSize + maskSize / 2);
-    const maskY = Math.floor((contentY - logoY) / logoSize * maskSize + maskSize / 2);
-    const index = (maskY * maskSize + maskX) * 4 + 3;
-    const inMask = maskX >= 0 && maskX < maskSize && maskY >= 0 && maskY < maskSize;
-    point.ink = inMask ? logo.pixels[index]! / 255 : 0;
-    point.halo = inMask ? logo.halo[index]! / 255 : 0;
-  }
+`;
+const fluidHead = `#version 300 es
+precision highp float;
+in vec2 vUv;
+in vec2 vL;
+in vec2 vR;
+in vec2 vT;
+in vec2 vB;
+out vec4 fragColor;
+`;
+const splatFragment = `${fluidHead}
+uniform sampler2D uTarget;
+uniform float uAspect;
+uniform vec2 uPoint;
+uniform vec3 uValue;
+uniform float uRadius;
+void main() {
+  vec2 offset = vUv - uPoint;
+  offset.x *= uAspect;
+  float falloff = exp(-dot(offset, offset) / uRadius);
+  fragColor = vec4(texture(uTarget, vUv).xyz + uValue * falloff, 1.0);
 }
+`;
+const curlFragment = `${fluidHead}
+uniform sampler2D uVelocity;
+void main() {
+  float left = texture(uVelocity, vL).y;
+  float right = texture(uVelocity, vR).y;
+  float top = texture(uVelocity, vT).x;
+  float bottom = texture(uVelocity, vB).x;
+  fragColor = vec4(0.5 * (right - left - top + bottom), 0.0, 0.0, 1.0);
+}
+`;
+const vorticityFragment = `${fluidHead}
+uniform sampler2D uVelocity;
+uniform sampler2D uCurl;
+uniform float uSwirl;
+uniform float uDt;
+void main() {
+  float left = texture(uCurl, vL).x;
+  float right = texture(uCurl, vR).x;
+  float top = texture(uCurl, vT).x;
+  float bottom = texture(uCurl, vB).x;
+  float middle = texture(uCurl, vUv).x;
+  vec2 force = 0.5 * vec2(abs(top) - abs(bottom), abs(right) - abs(left));
+  force = force / (length(force) + 0.0001) * uSwirl * middle;
+  force.y = -force.y;
+  vec2 velocity = texture(uVelocity, vUv).xy + force * uDt;
+  fragColor = vec4(clamp(velocity, -1000.0, 1000.0), 0.0, 1.0);
+}
+`;
+const divergenceFragment = `${fluidHead}
+uniform sampler2D uVelocity;
+void main() {
+  vec2 middle = texture(uVelocity, vUv).xy;
+  float left = vL.x < 0.0 ? -middle.x : texture(uVelocity, vL).x;
+  float right = vR.x > 1.0 ? -middle.x : texture(uVelocity, vR).x;
+  float top = vT.y > 1.0 ? -middle.y : texture(uVelocity, vT).y;
+  float bottom = vB.y < 0.0 ? -middle.y : texture(uVelocity, vB).y;
+  fragColor = vec4(0.5 * (right - left + top - bottom), 0.0, 0.0, 1.0);
+}
+`;
+const pressureFragment = `${fluidHead}
+uniform sampler2D uPressure;
+uniform sampler2D uDivergence;
+void main() {
+  float left = texture(uPressure, vL).x;
+  float right = texture(uPressure, vR).x;
+  float top = texture(uPressure, vT).x;
+  float bottom = texture(uPressure, vB).x;
+  float divergence = texture(uDivergence, vUv).x;
+  fragColor = vec4((left + right + top + bottom - divergence) * 0.25, 0.0, 0.0, 1.0);
+}
+`;
+const projectFragment = `${fluidHead}
+uniform sampler2D uPressure;
+uniform sampler2D uVelocity;
+void main() {
+  float left = texture(uPressure, vL).x;
+  float right = texture(uPressure, vR).x;
+  float top = texture(uPressure, vT).x;
+  float bottom = texture(uPressure, vB).x;
+  vec2 velocity = texture(uVelocity, vUv).xy - vec2(right - left, top - bottom);
+  fragColor = vec4(velocity, 0.0, 1.0);
+}
+`;
+const advectFragment = `${fluidHead}
+uniform sampler2D uVelocity;
+uniform sampler2D uSource;
+uniform vec2 uTexel;
+uniform float uDt;
+uniform float uFade;
+void main() {
+  vec2 from = vUv - uDt * texture(uVelocity, vUv).xy * uTexel;
+  fragColor = texture(uSource, from) / (1.0 + uFade * uDt);
+}
+`;
+const scaleFragment = `${fluidHead}
+uniform sampler2D uSource;
+uniform float uValue;
+void main() { fragColor = texture(uSource, vUv) * uValue; }
+`;
+const fieldFragment = `#version 300 es
+precision highp float;
+uniform vec2 uSize;
+uniform vec4 uGrid;
+uniform vec2 uOrigin;
+uniform vec2 uSlat;
+uniform float uTime;
+uniform float uScale;
+uniform float uDirection;
+uniform float uChop;
+uniform float uStretch;
+uniform float uGlint;
+uniform float uContrast;
+uniform float uPerspective;
+uniform float uFog;
+uniform float uIntro;
+uniform sampler2D tVelocity;
+uniform sampler2D tInk;
+uniform vec2 uFluidTexel;
+uniform float uFluid;
+uniform float uInk;
+uniform float uLean;
+out vec4 fragColor;
+const float waveTurn[4] = float[4](0.0, -0.95, 0.78, 1.62);
+const float waveLength[4] = float[4](2.6, 1.7, 1.12, 0.76);
+const float waveHeight[4] = float[4](1.0, 0.75, 0.5, 0.3);
+const float waveShift[4] = float[4](0.0, 2.3, 4.1, 1.1);
+void main() {
+  vec2 cell = floor(gl_FragCoord.xy);
+  float row = uGrid.y - 1.0 - cell.y;
+  vec2 center = uOrigin + vec2(cell.x, row) * uGrid.zw + uSlat * 0.5;
+  float v = clamp(center.y / uSize.y, 0.0, 1.0);
+  vec2 flow = vec2(0.0);
+  float ink = 0.0;
+  if (uFluid > 0.5) {
+    vec2 fluidUv = clamp(vec2(center.x / uSize.x, 1.0 - center.y / uSize.y), 0.0, 1.0);
+    flow = texture(tVelocity, fluidUv).xy * uFluidTexel * uSize;
+    ink = texture(tInk, fluidUv).x;
+  }
+  float horizon = mix(8.0, 0.5, uPerspective);
+  float depth = (1.0 + horizon) / (v + horizon);
+  vec2 world = vec2((center.x - uSize.x * 0.5) / uSize.y * depth, (depth - 1.0) * horizon * 2.2);
+  world -= flow * 0.00018 * depth;
+  world /= max(uScale, 0.05);
+  float meander = 0.55 * sin(dot(world, vec2(0.23, 0.41)) * 0.9 + uTime * 0.13)
+    + 0.3 * sin(dot(world, vec2(-0.37, 0.19)) * 1.4 - uTime * 0.09);
+  float steep = uChop * 0.45;
+  float height = 0.0;
+  float total = 0.0;
+  for (int i = 0; i < 4; i++) {
+    float angle = uDirection + waveTurn[i];
+    vec2 heading = vec2(cos(angle), sin(angle));
+    float k = 6.2831853 / waveLength[i];
+    float omega = sqrt(9.81 * k) * 0.35;
+    float theta = k * dot(world, heading) - omega * uTime + waveShift[i] + meander * (0.6 + 0.3 * float(i));
+    height += waveHeight[i] * (cos(theta) + steep * cos(2.0 * theta));
+    total += waveHeight[i] * (1.0 + steep);
+  }
+  float level = clamp(0.5 + 0.5 * height / (total * 0.85), 0.0, 1.0);
+  float crest = smoothstep(0.6, 1.0, level);
+  float glint = crest * crest * uGlint;
+  float haze = mix(1.0, 1.0 - uFog, pow(1.0 - v, 1.4));
+  float light = (pow(level, uContrast) + glint * 0.8) * haze;
+  float glow = 1.0 - exp(-max(ink, 0.0) * uInk * 1.6);
+  light = 1.0 - (1.0 - clamp(light, 0.0, 1.0)) * (1.0 - glow);
+  float front = uIntro * 1.35;
+  float reveal = 1.0 - smoothstep(front - 0.35, front, v);
+  float sweep = exp(-pow((v - front + 0.22) / 0.07, 2.0)) * (1.0 - uIntro);
+  light = (light + sweep * 0.8) * reveal;
+  light = max(light, 0.045 * reveal);
+  float span = mix(1.0 - uStretch, 1.0, level) + glow * 0.3;
+  span = clamp(span, 0.08, 1.0) * mix(0.1, 1.0, reveal);
+  float tint = clamp(max(glint * 1.4, glow * 0.9) + sweep, 0.0, 1.0);
+  float lean = clamp(flow.x / 1400.0, -1.0, 1.0) * uLean * reveal;
+  fragColor = vec4(clamp(light, 0.0, 1.0), span, tint, 0.5 + 0.5 * lean);
+}
+`;
+const slatFragment = `#version 300 es
+precision highp float;
+uniform sampler2D tField;
+uniform vec2 uSize;
+uniform float uDpr;
+uniform vec4 uGrid;
+uniform vec2 uOrigin;
+uniform vec2 uSlat;
+uniform float uRound;
+uniform float uTilt;
+uniform vec3 uColor;
+uniform vec3 uGlintColor;
+uniform vec4 uBackground;
+out vec4 fragColor;
+float pill(vec2 p, vec2 b, float r) {
+  vec2 q = abs(p) - b + r;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+void main() {
+  vec2 p = vec2(gl_FragCoord.x, uSize.y * uDpr - gl_FragCoord.y) / uDpr;
+  vec2 local = p - uOrigin;
+  vec2 cell = floor(local / uGrid.zw);
+  vec4 background = vec4(uBackground.rgb * uBackground.a, uBackground.a);
+  vec4 slat = vec4(0.0);
+  int reach = uTilt > 0.0 ? 1 : 0;
+  for (int dx = -1; dx <= 1; dx++) {
+    if (abs(dx) > reach) continue;
+    vec2 neighbour = cell + vec2(float(dx), 0.0);
+    if (neighbour.x < 0.0 || neighbour.y < 0.0 || neighbour.x >= uGrid.x || neighbour.y >= uGrid.y) continue;
+    vec4 field = texelFetch(tField, ivec2(int(neighbour.x), int(uGrid.y - 1.0 - neighbour.y)), 0);
+    vec2 offset = local - neighbour * uGrid.zw - uSlat * 0.5;
+    float angle = (field.a - 0.5) * 2.0 * uTilt;
+    float c = cos(angle);
+    float s = sin(angle);
+    vec2 turned = vec2(c * offset.x + s * offset.y, c * offset.y - s * offset.x);
+    vec2 halfSize = vec2(uSlat.x * 0.5, uSlat.y * 0.5 * field.g);
+    float radius = uRound * min(halfSize.x, halfSize.y);
+    float alpha = clamp(0.5 - pill(turned, halfSize, radius) * uDpr, 0.0, 1.0) * field.r;
+    if (alpha > slat.a) slat = vec4(mix(uColor, uGlintColor, field.b) * alpha, alpha);
+  }
+  fragColor = slat + background * (1.0 - slat.a);
+}
+`;
 
-watch(() => props.scrollTop, () => {
-  updateScrollPoints();
-  draw();
+const props = withDefaults(defineProps<MicroSlatsProps>(), {
+  preset: "swell", color: "#10b981", glintColor: "#ffffff", backgroundColor: "#000000",
+  slatWidth: 10, slatHeight: 25, gap: 3, roundness: 0.75,
+  interactive: true, cursorStrength: 1, cursorSize: 40, swirl: 0, trail: 1.4, lean: 0,
+  intro: true, introDuration: 1.5, paused: false,
 });
+const containerRef = ref<HTMLDivElement>();
+let settings: Settings;
+let wake = () => {};
+let disposeScene: (() => void) | undefined;
 
-function draw() {
-  if (!context || !fogContext || !fogPixels || !width || !height) return;
-  context.clearRect(0, 0, width, height);
-  const time = elapsed * 0.7;
-  const radius = width < 600 ? 78 : 112;
-  let columnX = -1;
-  let waveA = 0;
-  let waveB = 0;
-  let waveC = 0;
-  let bandWidth = 0;
-  let modulation = 0;
-  for (const { x, y, nx, ny, ink, halo, variation, pixelIndex } of points) {
-    if (ink > 0.65) {
-      fogPixels.data[pixelIndex] = ink * 0.32 * 255;
-      continue;
-    }
-    if (x !== columnX) {
-      columnX = x;
-      const flowX = 0.7 - nx;
-      const amplitude = 0.08 + Math.abs(flowX) * 0.09;
-      waveA = 0.46 + Math.sin(nx * 7.5 - time) * amplitude + Math.sin(nx * 15 + time * 0.7) * 0.018;
-      waveB = 0.61 + Math.sin(nx * 6.3 - time * 0.79 + 1.7) * amplitude;
-      waveC = 0.24 + Math.sin(nx * 8.1 + time * 0.63 + 3.1) * amplitude;
-      bandWidth = 0.036 + Math.max(0, flowX) * 0.032;
-      modulation = 0.65 + Math.sin(nx * 15 - time * 1.3) * 0.35;
-    }
-    const fog = ny < 1 ? Math.exp(-(((ny - waveA) / bandWidth) ** 2)) * 0.77
-      + Math.exp(-(((ny - waveB) / bandWidth) ** 2)) * 0.53
-      + Math.exp(-(((ny - waveC) / (bandWidth * 0.8)) ** 2)) * 0.42 : 0;
-    const haloStrength = Math.min(1, halo * 2.4) * (0.77 + Math.sin(elapsed * 0.34 * 1.9 + nx * 10 - ny * 6) * 0.12);
-    const hover = pointer.strength > 0.001 ? Math.max(0, 1 - Math.hypot(x - pointer.x, y - pointer.y) / radius) ** 2 * pointer.strength : 0;
-    const mist = Math.min(1, fog * modulation);
-    const size = Math.min(fogPixelSize, (0.55 + step * (mist * 0.49 + haloStrength * 0.75 + hover * 0.47)) * variation);
-    fogPixels.data[pixelIndex] = Math.min(0.95, (ny < 1 ? 0.08 : 0) + mist * 0.3 + haloStrength * 1.1 + hover * 0.2)
-      * (1 - ink) * Math.min(1, (size / fogPixelSize) ** 2) * 255;
-  }
-  // ACT: 点阵统一写入离屏掩膜后批量绘制，避免逐点调用 Canvas fillRect。
-  fogContext.putImageData(fogPixels, 0, 0);
-  context.drawImage(fogLayer, 0, 0, fogLayer.width * fogPixelSize, fogLayer.height * fogPixelSize);
-  context.globalCompositeOperation = "source-in";
-  context.fillStyle = inkColor;
-  context.fillRect(0, 0, width, height);
-  context.globalCompositeOperation = "source-over";
-}
-
-function tick(timestamp: number) {
-  animationFrame = 0;
-  if (events.signal.aborted || document.hidden || reducedMotion.matches || !width || !height) return;
-  if (!lastFrame || timestamp - lastFrame >= 1000 / 30) {
-    elapsed += lastFrame ? Math.min((timestamp - lastFrame) / 1000, 0.07) : 0;
-    lastFrame = timestamp;
-    pointer.x += (pointer.targetX - pointer.x) * 0.22;
-    pointer.y += (pointer.targetY - pointer.y) * 0.22;
-    pointer.strength += (pointer.targetStrength - pointer.strength) * 0.18;
-    draw();
-  }
-  animationFrame = requestAnimationFrame(tick);
-}
-
-function syncAnimation() {
-  cancelAnimationFrame(animationFrame);
-  animationFrame = 0;
-  lastFrame = 0;
-  draw();
-  if (logo && width && height && !document.hidden && !reducedMotion.matches && !events.signal.aborted) {
-    animationFrame = requestAnimationFrame(tick);
-  }
-}
-
-function updateColor() {
-  const color = getComputedStyle(fogCanvas.value!).color;
-  if (color === inkColor) return;
-  inkColor = color;
-  draw();
-}
-
-onMounted(() => {
-  const canvas = fogCanvas.value!;
-  context = canvas.getContext("2d");
-  if (!context) return;
-  fogLayer = document.createElement("canvas");
-  fogContext = fogLayer.getContext("2d");
-  if (!fogContext) return;
-  reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const options = { passive: true, signal: events.signal };
-  updateColor();
-  image = new Image();
-  image.onload = () => {
-    if (events.signal.aborted) return;
-    logo = sampleLogo();
-    resize();
+function updateSettings() {
+  const base = swellPresets[props.preset] || swellPresets.swell;
+  settings = {
+    ...props,
+    color: parseColor(props.color, [0.06, 0.73, 0.51, 1]),
+    glintColor: parseColor(props.glintColor, [1, 1, 1, 1]),
+    backgroundColor: parseColor(props.backgroundColor, [0, 0, 0, 1]),
+    scale: props.scale ?? base.scale, speed: props.speed ?? base.speed,
+    direction: props.direction ?? base.direction, chop: props.chop ?? base.chop,
+    stretch: props.stretch ?? base.stretch, glint: props.glint ?? base.glint,
+    contrast: props.contrast ?? base.contrast, perspective: props.perspective ?? base.perspective,
+    fog: props.fog ?? base.fog,
   };
-  image.src = logoUrl;
-  resizeObserver = new ResizeObserver(resize);
-  resizeObserver.observe(canvas);
-  themeObserver = new MutationObserver(updateColor);
-  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
-  canvas.parentElement!.addEventListener("pointermove", (event) => {
-    if (event.pointerType === "touch" || reducedMotion.matches) return;
-    const bounds = canvas.getBoundingClientRect();
-    pointer.targetX = event.clientX - bounds.left;
-    pointer.targetY = event.clientY - bounds.top;
-    pointer.targetStrength = +(pointer.targetX >= 0 && pointer.targetX <= bounds.width && pointer.targetY >= 0 && pointer.targetY <= bounds.height);
-    if (pointer.strength < 0.01) { pointer.x = pointer.targetX; pointer.y = pointer.targetY; }
-  }, options);
-  canvas.parentElement!.addEventListener("pointerleave", () => { pointer.targetStrength = 0; }, options);
-  window.addEventListener("blur", () => { pointer.targetStrength = 0; }, options);
-  document.addEventListener("visibilitychange", syncAnimation, options);
-  reducedMotion.addEventListener("change", () => {
-    pointer.strength = pointer.targetStrength = 0;
-    syncAnimation();
-  }, options);
-});
+  wake();
+}
+watch(() => ({ ...props }), updateSettings);
 
-onBeforeUnmount(() => {
-  events.abort();
-  cancelAnimationFrame(animationFrame);
-  resizeObserver?.disconnect();
-  themeObserver?.disconnect();
-  if (image) image.onload = null;
-});
+function mountScene() {
+  const container = containerRef.value;
+  if (!container) return;
+  updateSettings();
+  // ACT: 不支持 WebGL2 时保留宿主底色，不影响首页业务交互。
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: false, depth: false });
+  if (!context) return;
+  const renderer = new Renderer({ canvas, webgl: 2, alpha: true, premultipliedAlpha: true, antialias: false, depth: false });
+  const gl = renderer.gl;
+  gl.clearColor(0, 0, 0, 0);
+  canvas.setAttribute("aria-hidden", "true");
+  container.appendChild(canvas);
+  const geometry = new Triangle(gl);
+  const blank = new Texture(gl);
+  const floatTargets = !!gl.getExtension("EXT_color_buffer_float");
+  const dispose = (target: RenderTarget) => {
+    gl.deleteFramebuffer(target.buffer);
+    gl.deleteTexture(target.texture.texture);
+  };
+  let fieldTarget = new RenderTarget(gl, { width: 1, height: 1, depth: false, minFilter: gl.NEAREST, magFilter: gl.NEAREST });
+  const fieldUniforms = {
+    uSize: { value: [1, 1] }, uGrid: { value: [1, 1, 1, 1] }, uOrigin: { value: [0, 0] },
+    uSlat: { value: [1, 1] }, uTime: { value: 0 }, uScale: { value: 1 },
+    uDirection: { value: 0 }, uChop: { value: 0.5 }, uStretch: { value: 0.3 },
+    uGlint: { value: 1 }, uContrast: { value: 1 }, uPerspective: { value: 0.7 },
+    uFog: { value: 0.5 }, uIntro: { value: 0 }, tVelocity: { value: blank },
+    tInk: { value: blank }, uFluidTexel: { value: [1, 1] }, uFluid: { value: 0 },
+    uInk: { value: 1 }, uLean: { value: 0.5 },
+  };
+  const fieldMesh = new Mesh(gl, {
+    geometry,
+    program: new Program(gl, { vertex: passVertex, fragment: fieldFragment, uniforms: fieldUniforms, depthTest: false, depthWrite: false }),
+  });
+  const slatUniforms = {
+    tField: { value: fieldTarget.texture }, uSize: { value: [1, 1] }, uDpr: { value: 1 },
+    uGrid: { value: [1, 1, 1, 1] }, uOrigin: { value: [0, 0] }, uSlat: { value: [1, 1] },
+    uRound: { value: 1 }, uTilt: { value: 0 }, uColor: { value: [1, 1, 1] },
+    uGlintColor: { value: [1, 1, 1] }, uBackground: { value: [0, 0, 0, 1] },
+  };
+  const slatMesh = new Mesh(gl, {
+    geometry,
+    program: new Program(gl, { vertex: passVertex, fragment: slatFragment, uniforms: slatUniforms, depthTest: false, depthWrite: false }),
+  });
+  const fluidTexel = { value: [1, 1] };
+  const fluidPass = (fragment: string, uniforms: Record<string, { value: unknown }>) => new Mesh(gl, {
+    geometry,
+    program: new Program(gl, { vertex: fluidVertex, fragment, uniforms: { uTexel: fluidTexel, ...uniforms }, depthTest: false, depthWrite: false }),
+  });
+  const splatPass = fluidPass(splatFragment, {
+    uTarget: { value: blank }, uAspect: { value: 1 }, uPoint: { value: [0, 0] }, uValue: { value: [0, 0, 0] }, uRadius: { value: 0.01 },
+  });
+  const curlPass = fluidPass(curlFragment, { uVelocity: { value: blank } });
+  const vorticityPass = fluidPass(vorticityFragment, { uVelocity: { value: blank }, uCurl: { value: blank }, uSwirl: { value: 20 }, uDt: { value: 0.016 } });
+  const divergencePass = fluidPass(divergenceFragment, { uVelocity: { value: blank } });
+  const pressurePass = fluidPass(pressureFragment, { uPressure: { value: blank }, uDivergence: { value: blank } });
+  const projectPass = fluidPass(projectFragment, { uPressure: { value: blank }, uVelocity: { value: blank } });
+  const advectPass = fluidPass(advectFragment, { uVelocity: { value: blank }, uSource: { value: blank }, uDt: { value: 0.016 }, uFade: { value: 1 } });
+  const scalePass = fluidPass(scaleFragment, { uSource: { value: blank }, uValue: { value: 0 } });
+  const passes = [fieldMesh, slatMesh, splatPass, curlPass, vorticityPass, divergencePass, pressurePass, projectPass, advectPass, scalePass];
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const events = new AbortController();
+  let width = 1;
+  let height = 1;
+  let raf = 0;
+  let last = performance.now();
+  let time = 0;
+  let introClock = 0;
+  let visible = true;
+  let alive = true;
+  let fluid: Fluid | null = null;
+  let fluidUntil = 0;
+  let fluidDirty = false;
+  let splashTurn = 0;
+  const splats: Splat[] = [];
+  const pointer = { x: 0, y: 0, tracked: false };
+  const run = (mesh: Mesh, target?: RenderTarget) => renderer.render({ scene: mesh, target, clear: false });
+  const floatTarget = (w: number, h: number) => new RenderTarget(gl, {
+    width: w, height: h, depth: false, type: context.HALF_FLOAT, format: gl.RGBA,
+    internalFormat: context.RGBA16F, minFilter: gl.LINEAR, magFilter: gl.LINEAR,
+  });
+  const swapPair = (w: number, h: number): Pair => ({
+    read: floatTarget(w, h), write: floatTarget(w, h),
+    swap() { [this.read, this.write] = [this.write, this.read]; },
+  });
+  function disposeFluid() {
+    if (!fluid) return;
+    [fluid.velocity, fluid.ink, fluid.pressure].forEach(pair => { dispose(pair.read); dispose(pair.write); });
+    dispose(fluid.divergence);
+    dispose(fluid.curl);
+    fluid = null;
+  }
+  function buildFluid() {
+    if (!floatTargets || !settings.interactive || reducedMotion.matches) return;
+    const aspect = width / height;
+    const limit = Math.min(2048, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number);
+    const w = Math.min(limit, Math.max(8, Math.round(aspect >= 1 ? fluidSize * aspect : fluidSize)));
+    const h = Math.min(limit, Math.max(8, Math.round(aspect >= 1 ? fluidSize : fluidSize / aspect)));
+    if (fluid && fluid.width === w && fluid.height === h) return;
+    disposeFluid();
+    fluid = { width: w, height: h, velocity: swapPair(w, h), ink: swapPair(w, h), pressure: swapPair(w, h), divergence: floatTarget(w, h), curl: floatTarget(w, h) };
+    fluidTexel.value = [1 / w, 1 / h];
+  }
+  function layout(s: Settings) {
+    const slatW = clamp(s.slatWidth, 1, 64);
+    const slatH = clamp(s.slatHeight, 2, 240);
+    const gapSize = clamp(s.gap, 0, 64);
+    const pitchX = slatW + gapSize;
+    const pitchY = slatH + gapSize;
+    const cols = Math.min(2048, Math.ceil((width + gapSize) / pitchX) + 1);
+    const rows = Math.min(2048, Math.ceil((height + gapSize) / pitchY) + 1);
+    if (fieldTarget.width !== cols || fieldTarget.height !== rows) {
+      dispose(fieldTarget);
+      fieldTarget = new RenderTarget(gl, { width: cols, height: rows, depth: false, minFilter: gl.NEAREST, magFilter: gl.NEAREST });
+      slatUniforms.tField.value = fieldTarget.texture;
+    }
+    return {
+      slatW, slatH, grid: [cols, rows, pitchX, pitchY],
+      origin: [(width - (cols * pitchX - gapSize)) / 2, (height - (rows * pitchY - gapSize)) / 2],
+      tilt: Math.min(0.42, Math.asin(clamp((pitchX * 1.5 - slatW * 0.5) / (slatH * 0.5), 0, 1))),
+    };
+  }
+  function splat(pair: Pair, point: number[], value: number[], radius: number) {
+    const u = splatPass.program.uniforms;
+    u.uTarget.value = pair.read.texture;
+    u.uAspect.value = width / height;
+    u.uPoint.value = point;
+    u.uValue.value = value;
+    u.uRadius.value = radius;
+    run(splatPass, pair.write);
+    pair.swap();
+  }
+  function stepFluid(f: Fluid, dt: number, s: Settings) {
+    if (s.swirl > 0) {
+      curlPass.program.uniforms.uVelocity.value = f.velocity.read.texture;
+      run(curlPass, f.curl);
+      const vorticity = vorticityPass.program.uniforms;
+      vorticity.uVelocity.value = f.velocity.read.texture;
+      vorticity.uCurl.value = f.curl.texture;
+      vorticity.uSwirl.value = clamp(s.swirl, 0, 2) * 40;
+      vorticity.uDt.value = dt;
+      run(vorticityPass, f.velocity.write);
+      f.velocity.swap();
+    }
+    divergencePass.program.uniforms.uVelocity.value = f.velocity.read.texture;
+    run(divergencePass, f.divergence);
+    scalePass.program.uniforms.uSource.value = f.pressure.read.texture;
+    scalePass.program.uniforms.uValue.value = 0.8;
+    run(scalePass, f.pressure.write);
+    f.pressure.swap();
+    pressurePass.program.uniforms.uDivergence.value = f.divergence.texture;
+    for (let i = 0; i < pressureSteps; i++) {
+      pressurePass.program.uniforms.uPressure.value = f.pressure.read.texture;
+      run(pressurePass, f.pressure.write);
+      f.pressure.swap();
+    }
+    projectPass.program.uniforms.uPressure.value = f.pressure.read.texture;
+    projectPass.program.uniforms.uVelocity.value = f.velocity.read.texture;
+    run(projectPass, f.velocity.write);
+    f.velocity.swap();
+    const fade = 1 / clamp(s.trail, 0.1, 10);
+    const advect = advectPass.program.uniforms;
+    advect.uDt.value = dt;
+    advect.uVelocity.value = f.velocity.read.texture;
+    advect.uSource.value = f.velocity.read.texture;
+    advect.uFade.value = fade * 1.4;
+    run(advectPass, f.velocity.write);
+    f.velocity.swap();
+    advect.uVelocity.value = f.velocity.read.texture;
+    advect.uSource.value = f.ink.read.texture;
+    advect.uFade.value = fade;
+    run(advectPass, f.ink.write);
+    f.ink.swap();
+  }
+  function clearFluid(f: Fluid) {
+    scalePass.program.uniforms.uValue.value = 0;
+    [f.velocity, f.ink, f.pressure].forEach(pair => {
+      scalePass.program.uniforms.uSource.value = pair.read.texture;
+      run(scalePass, pair.write);
+      pair.swap();
+    });
+  }
+  function frame(now: number) {
+    raf = 0;
+    if (!alive || !visible || document.hidden || gl.isContextLost()) return;
+    const s = settings;
+    const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+    last = now;
+    if (!s.paused && !reducedMotion.matches) time += dt * s.speed;
+    introClock = s.intro && !reducedMotion.matches ? introClock + dt / Math.max(0.2, s.introDuration) : 1;
+    const introLinear = Math.min(introClock, 1);
+    const introEase = introLinear < 0.5 ? 4 * introLinear ** 3 : 1 - (-2 * introLinear + 2) ** 3 / 2;
+    if (fluid && splats.length) {
+      const radius = (clamp(s.cursorSize, 4, 600) / height) ** 2 * 0.35;
+      const aspect = width / height;
+      for (const [u, v, du, dv, turn] of splats) {
+        if (turn === null) {
+          splat(fluid.velocity, [u, v], [du * splatForce, dv * splatForce, 0], radius);
+          splat(fluid.ink, [u, v], [0.13, 0, 0], radius);
+          continue;
+        }
+        const jet = radius * 0.55;
+        const reach = Math.sqrt(jet * 0.5) * 1.9;
+        const push = splatForce * 0.08;
+        for (let i = 0; i < splashJets; i++) {
+          const angle = turn + i / splashJets * Math.PI * 2;
+          const dx = Math.cos(angle);
+          const dy = Math.sin(angle);
+          const point = [u + dx * reach / aspect, v + dy * reach];
+          splat(fluid.velocity, point, [(dx - dy) * Math.SQRT1_2 * push, (dy + dx) * Math.SQRT1_2 * push, 0], jet);
+          splat(fluid.ink, point, [0.75, 0, 0], jet);
+        }
+        splat(fluid.ink, [u, v], [0.45, 0, 0], radius);
+      }
+      splats.length = 0;
+      fluidDirty = true;
+    }
+    const fluidActive = fluid !== null && now < fluidUntil && s.interactive && !s.paused && !reducedMotion.matches;
+    if (fluid) {
+      if (fluidActive) stepFluid(fluid, Math.min(Math.max(dt, 1 / 240), 1 / 30), s);
+      else if (fluidDirty) { clearFluid(fluid); fluidDirty = false; }
+    }
+    const grid = layout(s);
+    fieldUniforms.uSize.value = [width, height];
+    fieldUniforms.uGrid.value = grid.grid;
+    fieldUniforms.uOrigin.value = grid.origin;
+    fieldUniforms.uSlat.value = [grid.slatW, grid.slatH];
+    fieldUniforms.uTime.value = time;
+    fieldUniforms.uScale.value = s.scale;
+    fieldUniforms.uDirection.value = s.direction * Math.PI / 180;
+    fieldUniforms.uChop.value = clamp(s.chop, 0, 1.5);
+    fieldUniforms.uStretch.value = clamp(s.stretch, 0, 0.95);
+    fieldUniforms.uGlint.value = Math.max(0, s.glint);
+    fieldUniforms.uContrast.value = clamp(s.contrast, 0.2, 4);
+    fieldUniforms.uPerspective.value = clamp(s.perspective, 0, 1);
+    fieldUniforms.uFog.value = clamp(s.fog, 0, 1);
+    fieldUniforms.uIntro.value = introEase;
+    fieldUniforms.uFluid.value = fluidActive ? 1 : 0;
+    fieldUniforms.tVelocity.value = fluid ? fluid.velocity.read.texture : blank;
+    fieldUniforms.tInk.value = fluid ? fluid.ink.read.texture : blank;
+    fieldUniforms.uFluidTexel.value = fluidTexel.value;
+    fieldUniforms.uInk.value = clamp(s.cursorStrength, 0, 3);
+    fieldUniforms.uLean.value = clamp(s.lean, 0, 1);
+    renderer.render({ scene: fieldMesh, target: fieldTarget });
+    slatUniforms.uSize.value = [width, height];
+    slatUniforms.uDpr.value = renderer.dpr;
+    slatUniforms.uGrid.value = grid.grid;
+    slatUniforms.uOrigin.value = grid.origin;
+    slatUniforms.uSlat.value = [grid.slatW, grid.slatH];
+    slatUniforms.uRound.value = clamp(s.roundness, 0, 1);
+    slatUniforms.uTilt.value = fluidActive && s.lean > 0 ? grid.tilt : 0;
+    slatUniforms.uColor.value = s.color.slice(0, 3);
+    slatUniforms.uGlintColor.value = s.glintColor.slice(0, 3);
+    slatUniforms.uBackground.value = s.backgroundColor;
+    renderer.render({ scene: slatMesh });
+    const moving = !s.paused && !reducedMotion.matches && s.speed !== 0 || introClock < 1;
+    if (moving || fluidActive || fluidDirty) raf = requestAnimationFrame(frame);
+  }
+  function start() {
+    if (raf || !visible || !alive || document.hidden || gl.isContextLost()) return;
+    last = performance.now();
+    raf = requestAnimationFrame(frame);
+  }
+  function resize() {
+    width = Math.max(1, container!.clientWidth);
+    height = Math.max(1, container!.clientHeight);
+    renderer.dpr = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(pixelBudget / (width * height)));
+    renderer.setSize(width, height);
+    buildFluid();
+    start();
+  }
+  function locate(event: PointerEvent) {
+    const rect = container!.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const w = Math.max(1, rect.width);
+    const h = Math.max(1, rect.height);
+    return { x, y, u: x / w, v: 1 - y / h, h, inside: x >= 0 && y >= 0 && x <= w && y <= h };
+  }
+  function queue(u: number, v: number, du: number, dv: number, turn: number | null) {
+    if (splats.length >= 32) splats.shift();
+    splats.push([u, v, du, dv, turn]);
+    fluidUntil = performance.now() + Math.max(1.5, settings.trail * 5) * 1000;
+    start();
+  }
+  function canInteract(event: PointerEvent) {
+    return fluid && settings.interactive && !settings.paused && !reducedMotion.matches && !document.hidden && visible && event.pointerType !== "touch";
+  }
+  function onPointerMove(event: PointerEvent) {
+    const spot = locate(event);
+    if (!canInteract(event) || !spot.inside) { pointer.tracked = false; return; }
+    if (pointer.tracked && (spot.x !== pointer.x || spot.y !== pointer.y)) {
+      queue(spot.u, spot.v, (spot.x - pointer.x) / spot.h, (pointer.y - spot.y) / spot.h, null);
+    }
+    pointer.x = spot.x;
+    pointer.y = spot.y;
+    pointer.tracked = true;
+  }
+  function onPointerDown(event: PointerEvent) {
+    const spot = locate(event);
+    if (!canInteract(event) || !spot.inside) return;
+    splashTurn += 2.39996;
+    queue(spot.u, spot.v, 0, 0, splashTurn);
+  }
+  function onPointerLeave() { pointer.tracked = false; }
+  function syncVisibility() {
+    cancelAnimationFrame(raf);
+    raf = 0;
+    pointer.tracked = false;
+    splats.length = 0;
+    start();
+  }
+  function onMotionChange() {
+    splats.length = 0;
+    fluidUntil = 0;
+    pointer.tracked = false;
+    buildFluid();
+    start();
+  }
+  const options = { passive: true, signal: events.signal };
+  window.addEventListener("pointermove", onPointerMove, options);
+  window.addEventListener("pointerdown", onPointerDown, options);
+  window.addEventListener("pointerout", event => { if (!event.relatedTarget) onPointerLeave(); }, options);
+  window.addEventListener("blur", onPointerLeave, options);
+  document.addEventListener("visibilitychange", syncVisibility, options);
+  reducedMotion.addEventListener("change", onMotionChange, options);
+  canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); syncVisibility(); }, { signal: events.signal });
+  canvas.addEventListener("webglcontextrestored", () => { disposeScene?.(); mountScene(); }, { signal: events.signal });
+  const resizeObserver = new ResizeObserver(resize);
+  resizeObserver.observe(container);
+  const intersectionObserver = new IntersectionObserver(entries => {
+    visible = entries[0]?.isIntersecting ?? false;
+    syncVisibility();
+  });
+  intersectionObserver.observe(container);
+  wake = () => { buildFluid(); start(); };
+  resize();
+  disposeScene = () => {
+    alive = false;
+    cancelAnimationFrame(raf);
+    events.abort();
+    resizeObserver.disconnect();
+    intersectionObserver.disconnect();
+    wake = () => {};
+    disposeFluid();
+    dispose(fieldTarget);
+    geometry.remove();
+    passes.forEach(mesh => mesh.program.remove());
+    gl.deleteTexture(blank.texture);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    canvas.remove();
+  };
+}
+
+onMounted(mountScene);
+onBeforeUnmount(() => disposeScene?.());
 </script>
 
 <style lang="scss" scoped>
-.pixelFog {
-  display: block;
-  width: 100%;
-  height: 100%;
+.microSlats {
+  overflow: hidden;
   pointer-events: none;
-  color: var(--el-text-color-primary);
-  opacity: 0.6;
+
+  :deep(canvas) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
 }
 </style>

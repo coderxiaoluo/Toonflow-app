@@ -20,7 +20,7 @@
       <section v-else-if="view === 'current'" class="connectionInfo" aria-label="当前连接">
         <icon-device-desktop :size="40" aria-hidden="true" />
         <el-tag :type="mobileConnection.online === true ? mobileConnectionVersionWarning ? 'warning' : 'success' : mobileConnection.online === false ? 'danger' : 'info'">{{ mobileConnectionLabel }}</el-tag>
-        <h3>{{ mobileConnection.name || 'Toonflow' }}</h3>
+        <h3>{{ mobileConnection.name || 'xiaobo' }}</h3>
         <code>{{ mobileConnection.url }}</code>
         <p class="description">{{ mobileConnection.online === true ? '正在使用这个设备的项目与配置。' : mobileConnection.online === false ? '暂时无法连接这个设备，请检查对方是否运行以及网络连接。' : '正在确认这个设备是否可以连接…' }}</p>
         <el-alert v-if="mobileConnectionVersionWarning" :title="mobileConnectionVersionWarning" type="warning" :closable="false" showIcon />

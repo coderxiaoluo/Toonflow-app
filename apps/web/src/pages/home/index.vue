@@ -1,12 +1,11 @@
 <template>
   <div class="home" :class="{ sidebarCollapsed }" :inert="creating || opening || workspaceStore.projectLoadingVisible">
-    <bg class="pageBackground" :scrollTop="backgroundScrollTop" />
+    <bg v-show="!onlineImageVisible" class="pageBackground" preset="swell" color="#10b981" glintColor="#ffffff" backgroundColor="transparent" :slatWidth="3" :slatHeight="12" :gap="4" :roundness="0.55" :scale="1.7" :speed="0.3" :stretch="0.4" :glint="0.55" :contrast="1.15" :perspective="0.45" :fog="0.35" :cursorStrength="0.5" :cursorSize="80" :trail="0.8" :lean="0.12" />
     <homeAdvertisementCarousel class="topPromotion" :advertisements="advertisements.banners" placement="banner" :mode="advertisements.bannerMode" :interval="advertisements.bannerInterval" @activate="activateAdvertisement" />
     <aside id="homeSidebar" class="homeSidebar" aria-label="首页侧栏">
       <div class="sidebarHeader">
         <div class="sidebarBrand">
-          <el-image class="sidebarLogo" :src="logoUrl" fit="contain" alt="Toonflow" />
-          <span class="brandName">Toonflow</span>
+          <span class="brandName">xiaobo</span>
         </div>
         <button class="sidebarToggle" type="button" :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!sidebarCollapsed" aria-controls="homeSidebar" @click="sidebarCollapsed = !sidebarCollapsed">
           <icon-layout-sidebar-left-expand v-if="sidebarCollapsed" :size="18" aria-hidden="true" />
@@ -18,9 +17,9 @@
           <component :is="section.icon" :size="18" aria-hidden="true" />
           <span class="sidebarText">{{ translate(section.label) }}</span>
         </button>
-        <button class="sidebarItem" :class="{ active: onlineImageVisible }" type="button" aria-label="在线生图" title="在线生图" :aria-current="onlineImageVisible ? 'page' : undefined" @click="openOnlineImage">
+        <button class="sidebarItem" :class="{ active: onlineImageVisible }" type="button" aria-label="在线生成" title="在线生成" :aria-current="onlineImageVisible ? 'page' : undefined" @click="openOnlineImage">
           <icon-photo :size="18" aria-hidden="true" />
-          <span class="sidebarText">在线生图</span>
+          <span class="sidebarText">在线生成</span>
         </button>
         <hr class="sidebarDivider" />
         <button class="sidebarItem" :class="{ active: assetsVisible }" type="button" aria-label="素材库" title="素材库" aria-haspopup="dialog" :aria-expanded="assetsVisible" @click="assetsVisible = true">
@@ -30,13 +29,6 @@
       </nav>
       <div class="sidebarFooter">
         <homeAdvertisementCarousel class="sidebarPromotion" :advertisements="advertisements.sidebar" @activate="activateAdvertisement" />
-        <button class="sidebarItem deviceButton" :class="{ connected: deviceHubEnabled || mobileConnection.online === true }" type="button" :aria-label="mobileConnectionLabel" :title="mobileConnectionLabel" @click="mobileConnectVisible = true">
-          <span class="sidebarIcon">
-            <component :is="deviceHubEnabled || mobileConnection.mode === 'remote' ? IconDeviceDesktop : IconQrcode" :size="18" aria-hidden="true" />
-            <span v-if="deviceHubEnabled || mobileConnection.online === true" class="connectionDot" />
-          </span>
-          <span class="sidebarText">{{ mobileConnectionLabel }}</span>
-        </button>
         <button class="sidebarItem" type="button" :aria-label="hasDesktopUpdate ? '设置，有新版本可用' : '设置'" :title="hasDesktopUpdate ? '设置，有新版本可用' : '设置'" @click="settingsVisible = true">
           <span class="sidebarIcon">
             <icon-settings :size="18" aria-hidden="true" />
@@ -44,10 +36,6 @@
           </span>
           <span class="sidebarText">设置</span>
         </button>
-        <a class="sidebarItem githubLink" href="https://github.com/HBAI-Ltd/Toonflow-app" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub">
-          <icon-brand-github :size="18" aria-hidden="true" />
-          <span class="sidebarText">GitHub</span>
-        </a>
       </div>
     </aside>
     <onlineImage v-if="onlineImageMounted" v-show="onlineImageVisible" class="onlineImagePage" :active="onlineImageVisible" @openSettings="settingsVisible = true" />
@@ -56,8 +44,7 @@
         <el-main class="pageContent">
           <section class="creationPanel" data-home-section="home" aria-label="创建项目">
             <div class="brand">
-              <el-image class="brandLogo" :src="logoUrl" fit="contain" alt="Toonflow" />
-              <h1>今天要做点什么？</h1>
+              <h1>创造无限可能</h1>
             </div>
             <div class="promptArea">
               <el-card class="promptCard" :class="{ draggingAttachments }" shadow="never" @dragenter.capture="dragEnterAttachments" @dragover.capture="dragOverAttachments" @dragleave.capture="dragLeaveAttachments" @drop.capture="dropAttachments">
@@ -111,13 +98,11 @@
               </projectCard>
             </div>
           </section>
-          <div data-home-section="explore"><explore :scrollElement="pageScroll?.wrapRef" /></div>
         </el-main>
       </div>
     </el-scrollbar>
     <assetLibraryDialog v-model="assetsVisible" />
     <settings ref="settingsDialog" v-model="settingsVisible" />
-    <mobileConnect v-model="mobileConnectVisible" />
     <workspacePicker ref="relocationPicker" hideTrigger />
   </div>
 </template>
@@ -126,12 +111,12 @@
 import { locale, translate } from "@toonflow/i18n/vue";
 import axios from "axios";
 import { storeToRefs } from "pinia";
-import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox, type InputInstance, type ScrollbarInstance } from "element-plus";
 import { getReadableFileMimeType, readableFileAccept } from "@toonflow/server/documentFormats";
 import {
-  IconQrcode, IconDeviceDesktop, IconHome, IconCompass,
+  IconHome,
   IconArrowUp, IconPlus, IconLoader2,
   IconFolder, IconEdit, IconFileZip,
   IconTrash, IconPaperclip, IconPhoto,
@@ -141,17 +126,14 @@ import attachmentList from "@/components/agent/attachmentList.vue";
 import { createPastedTextFile, readTextAttachment } from "@/components/agent/textAttachments";
 import type { AgentAttachment } from "@/components/agent/types";
 import type { HomeAdvertisement, HomeAdvertisements } from "@toonflow/server/channel";
-import logoUrl from "@toonflow/assets/logo.svg";
 import { useWorkspaceStore, type Project } from "@/stores/workspace";
 import { hasDesktopUpdate } from "@/stores/desktopUpdate";
-import { deviceHubEnabled, mobileConnection, mobileConnectionLabel } from "@/lib/mobile";
 import useWorkspaceFiles from "@/lib/workspaceFiles";
 import saveFile from "@/lib/saveFile";
 import { waitForControlValue } from "@/lib/mcpControl";
 import settings from "@/components/settings/index.vue";
 import assetLibraryDialog from "./assetLibraryDialog.vue";
 import bg from "./bg.vue";
-import explore from "./explore.vue";
 import onlineImage from "./onlineImage.vue";
 import projectCard from "./projectCard.vue";
 import workspacePicker from "./workspacePicker.vue";
@@ -163,17 +145,13 @@ const advertisements = ref<HomeAdvertisements>({ banner: null, banners: [], bann
 const assetsVisible = ref(false);
 const onlineImageVisible = ref(false);
 const onlineImageMounted = ref(false);
-const mobileConnectVisible = ref(false);
 const sidebarCollapsed = ref(false);
 const pageScroll = ref<ScrollbarInstance>();
-const backgroundScrollTop = ref(0);
 const activeSection = ref("home");
 const homeSections = [
   { id: "home", label: "首页", icon: IconHome },
   { id: "projects", label: "项目", icon: IconFolder },
-  { id: "explore", label: "探索", icon: IconCompass },
 ];
-const mobileConnect = defineAsyncComponent(() => import("@/components/mobileConnect.vue"));
 const router = useRouter();
 const pageLifetime = new AbortController();
 const creating = ref(false);
@@ -280,7 +258,7 @@ async function loadAdvertisements() {
     const previewSlides: { title: string; subtitle: string; color: string; actionType: HomeAdvertisement["actionType"]; actionTarget: string }[] = [
       { title: "探索创作灵感", subtitle: "从一个想法，开始你的下一个作品", color: "#273442", actionType: preview === "web" ? "web" : "path", actionTarget: preview === "web" ? "https://github.com/HBAI-Ltd/Toonflow-app" : "/home?section=explore" },
       { title: "搭建你的工作流", subtitle: "前往插件市场，发现更多创作工具", color: "#2c303b", actionType: "settings", actionTarget: "pluginMarket" },
-      { title: "一起创造更多", subtitle: "在 GitHub 了解 Toonflow 的新进展", color: "#243734", actionType: "web", actionTarget: "https://github.com/HBAI-Ltd/Toonflow-app" },
+      { title: "一起创造更多", subtitle: "在 GitHub 了解 xiaobo 的新进展", color: "#243734", actionType: "web", actionTarget: "https://github.com/HBAI-Ltd/Toonflow-app" },
     ];
     const sidebar = previewSlides.map((slide, index): HomeAdvertisement => ({
       title: slide.title,
@@ -296,7 +274,7 @@ async function loadAdvertisements() {
         <circle cx="330" cy="237" r="12" fill="#fff" opacity=".85"/>
         <path d="m495 146 25 14-25 14z" fill="#fff"/>
         <g fill="#fff" font-family="Arial, Microsoft YaHei, sans-serif">
-          <text x="40" y="58" font-size="17" letter-spacing="3" opacity=".7">TOONFLOW · PREVIEW</text>
+          <text x="40" y="58" font-size="17" letter-spacing="3" opacity=".7">xiaobo · PREVIEW</text>
           <text x="40" y="136" font-size="38" font-weight="bold">${slide.title}</text>
           <text x="40" y="177" font-size="19" opacity=".7">${slide.subtitle}</text>
           <text x="40" y="303" font-size="16" opacity=".6">侧栏轮播预览 · ${index + 1} / 3</text>
@@ -385,9 +363,8 @@ async function scrollToSection(section: string) {
 function updateActiveSection() {
   const wrap = pageScroll.value?.wrapRef;
   if (!wrap) return;
-  backgroundScrollTop.value = wrap.scrollTop;
   if (wrap.scrollTop > 0 && wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 2) {
-    activeSection.value = "explore";
+    activeSection.value = "projects";
     return;
   }
   const top = wrap.getBoundingClientRect().top + 120;
@@ -542,7 +519,7 @@ async function exportProject(project: Project) {
   exportingDirectory.value = directory;
   try {
     let name = project.name.replace(/[<>:"/\\|?*\x00-\x1f\x7f-\x9f]/g, "_").slice(0, 120).replace(/[. ]+$/, "");
-    if (!name || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = "Toonflow";
+    if (!name || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = "xiaobo";
     const files = useWorkspaceFiles(directory);
     await saveFile(() => files.exportZip(pageLifetime.signal), `${name}.zip`);
   } catch (error) {
@@ -601,7 +578,7 @@ async function createProject(fromPrompt = true) {
   height: 100dvh;
   overflow: hidden;
   color: var(--el-text-color-primary);
-  background: color-mix(in srgb, var(--el-bg-color) 96%, var(--el-text-color-primary));
+  background: color-mix(in srgb, var(--el-bg-color) 97%, #718e85);
   transition: grid-template-columns var(--sidebarMotion) ease;
 
   @media (prefers-reduced-motion: reduce) { transition: none; }
@@ -609,13 +586,18 @@ async function createProject(fromPrompt = true) {
   .topPromotion { grid-column: 1 / -1; grid-row: 1; z-index: 1; }
 
   .pageBackground {
-    position: absolute;
-    inset-block: 0;
-    inset-inline-start: var(--sidebarWidth);
-    width: calc(100% - var(--sidebarWidth));
-    transition: inset-inline-start var(--sidebarMotion) ease, width var(--sidebarMotion) ease;
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    min-height: 0;
+    background: #e7efeb;
+    opacity: 0.32;
 
-    @media (prefers-reduced-motion: reduce) { transition: none; }
+    :global(.dark) & { background: #120f17; }
+
+    mask-image: radial-gradient(ellipse 88% 85% at 100% 100%, #000 0%, rgb(0 0 0 / 85%) 30%, rgb(0 0 0 / 35%) 58%, transparent 85%);
+
+    @media (max-width: 560px) { opacity: 0.24; }
   }
 
   &.sidebarCollapsed {
@@ -634,7 +616,6 @@ async function createProject(fromPrompt = true) {
 
         @media (min-width: 901px) {
           &:hover, &:has(.sidebarToggle:focus-visible) {
-            .sidebarLogo { opacity: 0; }
             .sidebarToggle { opacity: 1; }
           }
         }
@@ -682,15 +663,6 @@ async function createProject(fromPrompt = true) {
         gap: 9px;
         overflow: hidden;
         transition: gap var(--sidebarMotion) ease;
-
-        .sidebarLogo {
-          flex-shrink: 0;
-          width: 30px;
-          height: 30px;
-          transition: opacity var(--sidebarFade) ease;
-
-          .dark & { filter: invert(1); }
-        }
 
         .brandName {
           max-width: 150px;
@@ -761,7 +733,7 @@ async function createProject(fromPrompt = true) {
         display: inline-flex;
         flex-shrink: 0;
 
-        .connectionDot, .updateDot {
+        .updateDot {
           position: absolute;
           top: -2px;
           inset-inline-end: -3px;
@@ -779,7 +751,6 @@ async function createProject(fromPrompt = true) {
       &:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
       &:disabled { cursor: wait; opacity: 0.6; }
       &.active { background: var(--el-fill-color-darker); color: var(--el-text-color-primary); font-weight: 500; }
-      &.connected { color: var(--el-color-success); }
     }
 
     .sidebarNav, .sidebarFooter { display: flex; flex-direction: column; gap: 4px; }
@@ -801,7 +772,12 @@ async function createProject(fromPrompt = true) {
     height: 100%;
   }
 
-  .onlineImagePage { overflow: auto; overscroll-behavior: contain; }
+  .onlineImagePage {
+    grid-column: 2;
+    grid-row: 2;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
 
   .pageScroll {
     grid-column: 2;
@@ -814,27 +790,23 @@ async function createProject(fromPrompt = true) {
       min-height: 100%;
 
       .pageContent {
-        padding: 24px clamp(20px, 4vw, 56px) 56px;
+        width: 100%;
+        max-width: 1120px;
+        margin-inline: auto;
+        padding: max(48px, calc((100dvh - 280px) / 2)) clamp(24px, 5vw, 64px) 64px;
 
         .creationPanel {
-          max-width: 800px;
-          margin: clamp(32px, 6vh, 64px) auto 56px;
+          width: 100%;
+          max-width: 760px;
+          margin: 0 auto 64px;
 
           .brand {
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: clamp(8px, 1vw, 12px);
-            margin-bottom: 28px;
-
-            .brandLogo {
-              flex-shrink: 0;
-              width: clamp(28px, 3.4vw, 44px);
-              height: clamp(28px, 3.4vw, 44px);
-
-              .dark & {
-                filter: invert(1);
-              }
-            }
+            margin-bottom: 32px;
+            text-align: center;
 
             h1 {
               margin: 0;
@@ -850,15 +822,15 @@ async function createProject(fromPrompt = true) {
 
             .promptCard {
               position: relative;
-              border-radius: calc(var(--ui-radius) * 3);
-              border-color: var(--el-border-color-light);
-              background: color-mix(in srgb, var(--el-bg-color-overlay) 70%, transparent);
-              box-shadow: 0 12px 36px rgb(0 0 0 / 6%), inset 0 1px 0 color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+              border-radius: 24px;
+              border-color: color-mix(in srgb, var(--el-border-color-light) 65%, transparent);
+              background: var(--el-bg-color-overlay);
+              box-shadow: 0 24px 64px -20px rgb(36 58 48 / 10%), 0 2px 6px rgb(36 58 48 / 2%);
               transition: border-color 0.2s, box-shadow 0.2s;
 
               &:focus-within, &.draggingAttachments {
                 border-color: var(--el-color-primary-light-5);
-                box-shadow: 0 12px 36px rgb(0 0 0 / 6%), 0 0 0 3px color-mix(in srgb, var(--el-color-primary) 8%, transparent);
+                box-shadow: 0 24px 64px -20px rgb(36 58 48 / 10%), 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 6%, transparent);
               }
 
               :deep(.el-card__body) {
@@ -989,6 +961,7 @@ async function createProject(fromPrompt = true) {
             .workspaceHint {
               margin: 12px 16px 0;
               color: var(--el-text-color-secondary);
+              text-align: center;
               font-size: 12px;
               line-height: 1.7;
             }
@@ -996,12 +969,13 @@ async function createProject(fromPrompt = true) {
         }
 
         .projectList {
-          max-width: 1280px;
+          width: 100%;
+          max-width: 960px;
           margin: 0 auto;
 
           h2 {
             margin: 0 0 20px;
-            font-size: 22px;
+            font-size: 18px;
             font-weight: 600;
             line-height: 1.5;
           }
@@ -1014,10 +988,18 @@ async function createProject(fromPrompt = true) {
 
             .projectLaunchCard {
               position: relative;
-              border-radius: calc(var(--ui-radius) * 2.5);
+              border-radius: 18px;
               border-color: var(--el-border-color-lighter);
-              background: color-mix(in srgb, var(--el-bg-color-overlay) 70%, transparent);
-              box-shadow: var(--el-box-shadow-lighter);
+              background: var(--el-bg-color-overlay);
+              box-shadow: 0 4px 16px rgb(26 45 38 / 3%);
+              transition: transform 180ms ease, border-color 180ms ease;
+
+              &:hover { transform: translateY(-3px); border-color: var(--el-border-color); }
+
+              @media (prefers-reduced-motion: reduce) {
+                transition: none;
+                &:hover { transform: none; }
+              }
 
               &:focus-within {
                 border-color: var(--el-color-primary-light-5);

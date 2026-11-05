@@ -1,4 +1,33 @@
+import { BlockList, isIP } from "node:net";
 import { volcengineEndpoint } from "./volcengineArkCatalog";
+
+const privateAddresses = new BlockList();
+for (const [address, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12],
+  ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.88.99.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15],
+  ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) privateAddresses.addSubnet(address, prefix, "ipv4");
+for (const [address, prefix] of [["2001::", 23], ["2001:db8::", 32], ["2002::", 16], ["3fff::", 20]] as const) privateAddresses.addSubnet(address, prefix, "ipv6");
+const publicIpv6 = new BlockList();
+publicIpv6.addSubnet("2000::", 3, "ipv6");
+
+// ACT: 只做 URL 与地址字面量校验，不下载或探测参考视频；域名实际可达性由接收直链的供应商校验。
+export function validateVolcengineVideoUrl(value: unknown): string {
+  const url = typeof value === "string" && value.length <= 8192 && URL.canParse(value.trim()) ? new URL(value.trim()) : undefined;
+  if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) fail("视频须为不含凭据或片段的公网 HTTP(S) 直链");
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  const family = isIP(host);
+  if (family === 4 ? privateAddresses.check(host, "ipv4")
+    : family === 6 ? !publicIpv6.check(host, "ipv6") || privateAddresses.check(host, "ipv6")
+      : !host.includes(".") || /(?:^|\.)(?:localhost|local|internal|lan|home|test|invalid)$/.test(host)) {
+    fail("视频必须使用公网地址，不能使用本机、内网或特殊网络地址");
+  }
+  return url.href;
+}
+
+type ReferencedVideoRequest = VideoRequest & {
+  referenceOrder?: ({ type: "image" | "video" | "audio"; index: number } | { type: "firstFrame" | "lastFrame" | "text" })[];
+};
 
 type ArkModel = {
   id?: string;
@@ -10,6 +39,7 @@ type ArkModel = {
 };
 
 type ArkThis = {
+  id?: string;
   config: { apiUrl?: unknown; apiKey?: unknown };
   signal?: AbortSignal;
   models?: ArkModel[];
@@ -57,7 +87,7 @@ function messageOf(value: unknown, status: number) {
 }
 
 async function requestJson(context: ArkThis, path: string, body?: unknown) {
-  const url = volcengineEndpoint(apiBase(context.config), path);
+  const url = volcengineEndpoint(context.id === "developCc" ? "https://video.develop.cc" : apiBase(context.config), path);
   let response: Response;
   try {
     response = await context.tool.fetch(url, {
@@ -156,6 +186,7 @@ function referenceLimit(model: ArkModel | undefined, kind: "image" | "video" | "
 
 function mediaUrl(input: MediaInput, kind: "image" | "audio" | "video") {
   if (input.type === "url") {
+    if (kind === "video") return validateVolcengineVideoUrl(input.url);
     if (!/^https?:\/\//i.test(input.url)) fail("参考媒体需要 HTTP 或 HTTPS 地址");
     return input.url;
   }
@@ -220,27 +251,57 @@ export async function getVolcengineBalance(this: ArkThis): Promise<VolcengineArk
   return mapVolcengineBalance(payload);
 }
 
-export async function generateVolcengineVideo(this: ArkThis, request: VideoRequest): Promise<MediaAsset[]> {
+export async function generateVolcengineVideo(this: ArkThis, request: ReferencedVideoRequest): Promise<MediaAsset[]> {
   const model = modelOf(this, request.model);
-  const prompt = request.prompt.trim();
+  const media = { image: request.images, video: request.videos, audio: request.audios };
+  if (request.referenceOrder) {
+    for (const [index, reference] of request.referenceOrder.entries()) {
+      if (!reference || !["image", "video", "audio"].includes(reference.type) || !("index" in reference)
+        || !Number.isSafeInteger(reference.index) || reference.index < 0 || !media[reference.type]?.[reference.index]) {
+        fail(`参考 ${index + 1} 指向的素材不存在或类型不受支持`);
+      }
+    }
+  }
+  const prompt = request.prompt.trim().replace(/\{\{ref (\d+)\}\}/g, (marker, number: string) => {
+    const reference = request.referenceOrder?.[Number(number) - 1];
+    if (!reference || !("index" in reference) || !media[reference.type]?.[reference.index]) fail(`引用标记 ${marker} 没有对应素材，请重新选择引用`);
+    return `@${{ image: "图片", video: "视频", audio: "音频" }[reference.type]}${reference.index + 1}`;
+  });
   if (!prompt) fail("请输入视频提示词");
+  const supportsEditing = this.id === "developCc" && request.model === "seedance-2.5";
+  if (!supportsEditing && request.other?.videoOperation !== undefined && request.other.videoOperation !== "generate") fail("仅 Develop seedance-2.5 支持编辑或延长视频");
+  const operation = supportsEditing ? request.other?.videoOperation ?? "generate" : "generate";
+  if (!["generate", "edit", "extend"].includes(String(operation))) fail("视频操作模式无效");
+  const modifyingVideo = operation === "edit" || operation === "extend";
+  let sourceVideo: MediaInput | undefined;
+  if (modifyingVideo) {
+    const source = request.other?.sourceVideoUrl;
+    sourceVideo = { type: "url", url: validateVolcengineVideoUrl(source) };
+    if (request.videos?.length) fail("编辑或延长只允许一段原视频，请移除节点连接的参考视频，使用原视频直链");
+    if (request.firstFrame || request.lastFrame) fail("编辑或延长不支持首尾帧，请使用混合参考模式");
+  }
   const durationMap = model?.durationResolutionMap ?? [];
   const allowedDurations = [...new Set(durationMap.flatMap(item => numbers(item.duration)))];
   const fallbackDuration = typeof model?.defaultDuration === "number" ? model.defaultDuration : undefined;
-  const duration = request.duration ?? fallbackDuration;
-  if (duration === undefined) fail("请指定视频时长");
-  if (!Number.isInteger(duration) || duration < 1) fail("时长必须是明确的正整数秒数");
-  if (allowedDurations.length && !allowedDurations.includes(duration)) fail(`当前模型不支持时长 ${duration} 秒，可选：${allowedDurations.join("、")}`);
+  const duration = operation === "edit" ? -1 : operation === "extend"
+    ? request.other?.extensionDuration ?? -1 : request.duration ?? fallbackDuration;
+  if (typeof duration !== "number" || !Number.isInteger(duration)) fail("时长必须是整数秒数");
+  if (modifyingVideo) {
+    if (duration !== -1 && (duration < 4 || duration > 30)) fail("新增时长须为 4–30 秒，或选择自动时长");
+  } else {
+    if (duration < 1) fail("时长必须是明确的正整数秒数");
+    if (allowedDurations.length && !allowedDurations.includes(duration)) fail(`当前模型不支持时长 ${duration} 秒，可选：${allowedDurations.join("、")}`);
+  }
   const resolutionRow = durationMap.find(item => numbers(item.duration).includes(duration));
-  const allowedResolutions = strings(resolutionRow?.resolution);
+  const allowedResolutions = modifyingVideo ? [...new Set(durationMap.flatMap(item => strings(item.resolution)))] : strings(resolutionRow?.resolution);
   const fallbackResolution = typeof model?.defaultResolution === "string" ? model.defaultResolution : undefined;
   const resolution = request.resolution || fallbackResolution;
   if (!resolution) fail("请指定分辨率");
   if (allowedResolutions.length && !allowedResolutions.includes(resolution)) fail(`当前模型不支持分辨率 ${resolution}，可选：${allowedResolutions.join("、")}`);
   const ratios = strings(model?.videoRatios);
-  if (request.ratio && ratios.length && !ratios.includes(request.ratio)) fail(`当前模型不支持画幅 ${request.ratio}，可选：${ratios.join("、")}`);
+  if (!modifyingVideo && request.ratio && ratios.length && !ratios.includes(request.ratio)) fail(`当前模型不支持画幅 ${request.ratio}，可选：${ratios.join("、")}`);
   const images = request.images ?? [];
-  const videos = request.videos ?? [];
+  const videos = sourceVideo ? [sourceVideo] : request.videos ?? [];
   const audios = request.audios ?? [];
   if ((request.firstFrame && !request.lastFrame) || (!request.firstFrame && request.lastFrame)) fail("首尾帧必须成对提交");
   const counts = { image: images.length + (request.firstFrame ? 1 : 0) + (request.lastFrame ? 1 : 0), video: videos.length, audio: audios.length };
@@ -248,13 +309,16 @@ export async function generateVolcengineVideo(this: ArkThis, request: VideoReque
     const limit = referenceLimit(model, kind);
     if (limit !== undefined && counts[kind] > limit) fail(`${{ image: "参考图", video: "参考视频", audio: "参考音频" }[kind]}最多 ${limit} 个`);
   }
-  const content: Record<string, unknown>[] = [{ type: "text", text: prompt }];
+  // ACT: 显式操作模式补齐网关识别关键词，避免用户选中编辑/延长后被按普通生成受理。
+  const operationPrompt = operation === "edit" ? `编辑视频：${prompt}`
+    : operation === "extend" && !/向前延长|向后延长|延续|续写/.test(prompt) ? `延续视频：${prompt}` : prompt;
+  const content: Record<string, unknown>[] = [{ type: "text", text: operationPrompt }];
   if (request.firstFrame && request.lastFrame) {
     content.push(contentItem("image", request.firstFrame, "first_frame"), contentItem("image", request.lastFrame, "last_frame"));
   }
   content.push(
     ...images.map(item => contentItem("image", item)),
-    ...videos.map(item => contentItem("video", item)),
+    ...videos.map(item => contentItem("video", item, supportsEditing ? "reference_video" : undefined)),
     ...audios.map(item => contentItem("audio", item)),
   );
   const signal = AbortSignal.any([AbortSignal.timeout(30 * 60_000), ...(this.signal ? [this.signal] : [])]);
@@ -264,7 +328,7 @@ export async function generateVolcengineVideo(this: ArkThis, request: VideoReque
     content,
     resolution,
     duration,
-    ...(request.ratio ? { ratio: request.ratio } : {}),
+    ...(!modifyingVideo && request.ratio ? { ratio: request.ratio } : {}),
     ...(/^(?:seedance-|video-test$)/.test(request.model) ? { billing_mode: "token" } : {}),
     ...(typeof request.generateAudio === "boolean" ? { generate_audio: request.generateAudio } : {}),
     ...(typeof request.watermark === "boolean" ? { watermark: request.watermark } : {}),

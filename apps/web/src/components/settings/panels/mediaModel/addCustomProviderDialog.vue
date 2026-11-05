@@ -172,7 +172,7 @@ const emit = defineEmits<{ added: [provider: MediaProvider]; saved: [provider: M
 const providerSources: Record<string, string> = { apiMart: apiMartSource, metaso: metasoSource, compshare: compshareSource };
 const selectedProvider = ref<string>(mediaProviders[0]?.id ?? "");
 const activeProvider = computed(() => mediaProviders.find(provider => provider.id === selectedProvider.value));
-const models = computed<MediaProvider["models"]>(() => activeProvider.value?.models ?? []);
+const models = computed<MediaProvider["models"]>(() => activeProvider.value?.models.map(model => ({ ...model })) ?? []);
 const providerReadme = computed(() => {
   const provider = activeProvider.value;
   return provider && "readme" in provider && typeof provider.readme === "string" ? provider.readme : "";

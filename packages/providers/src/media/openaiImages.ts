@@ -9,6 +9,7 @@ type ImageModel = {
 };
 
 type ImageThis = {
+  id?: string;
   config: { apiUrl?: unknown; apiKey?: unknown };
   signal?: AbortSignal;
   models?: ImageModel[];
@@ -109,7 +110,7 @@ function wait(signal: AbortSignal, ms: number) {
 }
 
 async function callApi(context: ImageThis, path: string, body?: string | FormData, json = false) {
-  const url = openaiImagesEndpoint(apiBase(context.config), path);
+  const url = openaiImagesEndpoint(context.id === "developCc" ? "https://image.develop.cc" : apiBase(context.config), path);
   let response: Response;
   try {
     response = await context.tool.fetch(url, {

@@ -30,10 +30,13 @@ const emit = defineEmits<{ select: [] }>();
 <style lang="scss" scoped>
 .projectCard {
   position: relative;
-  border-radius: calc(var(--ui-radius) * 2.5);
+  border-radius: 18px;
   border-color: var(--el-border-color-lighter);
-  background: color-mix(in srgb, var(--el-bg-color-overlay) 70%, transparent);
-  box-shadow: var(--el-box-shadow-lighter);
+  background: var(--el-bg-color-overlay);
+  box-shadow: 0 4px 16px rgb(26 45 38 / 3%);
+  transition: transform 180ms ease, border-color 180ms ease;
+
+  &:hover { transform: translateY(-3px); border-color: var(--el-border-color); }
 
   &:focus-within { border-color: var(--el-color-primary-light-5); }
 
@@ -105,6 +108,8 @@ const emit = defineEmits<{ select: [] }>();
   }
 
   @media (prefers-reduced-motion: reduce) {
+    transition: none;
+    &:hover { transform: none; }
     .projectActions { transition: none; }
   }
 }

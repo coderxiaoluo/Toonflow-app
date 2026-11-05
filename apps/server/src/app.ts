@@ -13,7 +13,7 @@ import initializePlugins from "@/utils/plugins/initialize";
 import { languageRequest, resolveRequestLocale, runWithLocale, setLocaleFallback, translateError, translateMessage } from "@/lib/i18n";
 import { detectLocale, normalizeLocale } from "@toonflow/i18n";
 
-const autoInstallProviders = ["apiMart.ts", "metaso.ts", "compshare.ts"];
+const autoInstallProviders = ["developCc.ts"];
 
 export async function createApp({
   webRoot,
@@ -110,7 +110,7 @@ export async function createApp({
   app.use(cors());
   app.use(languageRequest);
   app.use("/a2a", express.json({ limit: "2mb" }));
-  app.use(["/api/workspaces/files/write", "/api/assets/save"], express.raw({ type: "application/octet-stream", limit: "100mb" }));
+  app.use(["/api/workspaces/files/write", "/api/assets/save", "/api/onlineImage/uploadVideo"], express.raw({ type: "application/octet-stream", limit: "100mb" }));
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
   app.use("/api/desktop", desktopRequest);

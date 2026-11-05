@@ -93,7 +93,10 @@ export function translate(message: string | MessageDescriptor, values?: Record<s
   const id = typeof message === "string" ? message : message.id;
   const parameters = values ?? (typeof message === "string" ? undefined : message.values);
   const catalog = Object.hasOwn(catalogs, language) ? catalogs[language] : undefined;
-  const translated = catalog && Object.hasOwn(catalog, id) && typeof catalog[id] === "string" ? catalog[id] : id;
+  // ACT: 只改翻译模板中的品牌显示，保留旧字典键、插值数据、URL、协议、技术标识和版权归属。
+  const displayText = (text: string) => /©|账号文本供应商 ID 必须为 Toonflow/.test(id) ? text
+    : text.replace(/(?<![\w@/.:+-])Toon(?:flow|Flow)(?![\w/:+-]|\.[A-Za-z0-9])/g, "xiaobo");
+  const translated = displayText(catalog && Object.hasOwn(catalog, id) && typeof catalog[id] === "string" ? catalog[id] : id);
   if (!parameters || !Object.keys(parameters).length) return translated;
   const format = (text: string) => {
     const cacheKey = `${language}\0${text}`;
@@ -112,8 +115,8 @@ export function translate(message: string | MessageDescriptor, values?: Record<s
   try { return format(translated); }
   catch {
     // ACT: 损坏或缺参数的外部语言包回退原文；参数只替换一次，不再解析用户输入。
-    try { return format(id); }
-    catch { return id.replace(/\{(\d+)\}/g, (token, key) => Object.hasOwn(parameters, key) ? String(parameters[key]) : token); }
+    try { return format(displayText(id)); }
+    catch { return displayText(id).replace(/\{(\d+)\}/g, (token, key) => Object.hasOwn(parameters, key) ? String(parameters[key]) : token); }
   }
 }
 

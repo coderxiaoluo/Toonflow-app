@@ -75,7 +75,7 @@ export function resolveNodeMenu(saved: NodeMenuItem[], nodes: { type: string; la
 
 export function filterNodeMenu(items: NodeMenuItem[], nodeTypes: ReadonlySet<string>): NodeMenuItem[] {
   return items.flatMap((item): NodeMenuItem[] => {
-    if (item.hidden) return [];
+    if (item.hidden || item.type === "remote-frameAnalysisNode") return [];
     if (item.type) return nodeTypes.has(item.type) ? [{ ...item }] : [];
     const children = filterNodeMenu(item.children ?? [], nodeTypes);
     return children.length ? [{ ...item, children }] : [];

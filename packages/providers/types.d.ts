@@ -21,6 +21,8 @@ interface ProviderModel<TRules extends readonly ProviderFormRule[] = readonly Pr
   audio?: "optional" | boolean;
   imageSizes?: string[];
   imageRatios?: string[];
+  /** 参考图数量上限，由图片协议适配器校验。 */
+  imageReferences?: number;
   /** 视频画幅。未声明时界面使用通用比例。adaptive 表示由接口自选。 */
   videoRatios?: string[];
   defaultResolution?: string;
@@ -220,6 +222,8 @@ interface ProviderDefinition<TRules extends readonly ProviderFormRule[] = readon
    */
   modelsUrl?: string;
   protocol?: "openai-completions" | "openai-responses" | "anthropic-messages" | "volcengine-ark" | "openai-images";
+  /** 同一供应商可同时使用多种宿主媒体协议。 */
+  protocols?: ("volcengine-ark" | "openai-images")[];
   /** 厂商说明的 Markdown 内容。 */
   readme?: string;
   rules: TRules;

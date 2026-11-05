@@ -2,7 +2,7 @@
   <div v-loading="loading" class="deviceLink">
     <section v-if="isRemoteConnection" class="remoteConnection" aria-label="当前连接设备">
       <el-tag :type="mobileConnection.online === true ? mobileConnectionVersionWarning ? 'warning' : 'success' : mobileConnection.online === false ? 'danger' : 'info'">{{ mobileConnectionLabel }}</el-tag>
-      <h3>{{ mobileConnection.name || 'Toonflow' }}</h3>
+      <h3>{{ mobileConnection.name || 'xiaobo' }}</h3>
       <code>{{ mobileConnection.url }}</code>
       <p class="description">当前使用这个设备的项目与配置。断开后恢复独立运行，才可以允许其他设备连接。</p>
       <el-alert v-if="mobileConnectionVersionWarning" :title="mobileConnectionVersionWarning" type="warning" :closable="false" showIcon />

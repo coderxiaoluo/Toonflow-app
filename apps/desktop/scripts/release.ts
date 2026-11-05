@@ -109,4 +109,4 @@ try {
   throw error;
 }
 console.log(`版本快照：${releaseDir}`);
-console.log(`将此目录交给独立更新服务器发布：bun run publish:update ${releaseDir}`);
+console.log("将版本快照中的安装包、更新清单、完整更新包及补丁上传到 coderxiaoluo/Toonflow-app 的同一 GitHub Release。");

@@ -111,7 +111,8 @@ async function loadMore() {
     if (!newItems.length && result.nextCursor !== null) throw new Error("云端没有返回新的作品，请重试");
     categories.value = result.categories;
     for (const item of newItems) loadedIds.add(item.id);
-    projects.value.push(...newItems);
+    // ACT: 仅移除官方默认示例的展示，不删除云端作品；分页游标及去重仍使用完整返回列表。
+    projects.value.push(...newItems.filter(item => !(item.author.name === "ACT" && ["1", "2"].includes(item.id))));
     loadedCursors.add(cursor);
     nextCursor = result.nextCursor ?? undefined;
     hasMore = result.nextCursor !== null;

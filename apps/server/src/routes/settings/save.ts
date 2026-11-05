@@ -7,6 +7,7 @@ import { maxSystemPromptLength } from "@/agent/runtime/prompt";
 import { t } from "@/lib/i18n";
 import { accountProviderSchema, providerSchema } from "@/utils/ai";
 import { nodeToolPermissionsSchema } from "@toonflow/tool-canvas/runtime";
+import { developCcApiUrl, developCcProtocol } from "@/utils/media/developCc";
 
 const router = Router();
 let saveQueue = Promise.resolve();
@@ -14,9 +15,14 @@ let saveQueue = Promise.resolve();
 export default router.put("/", validateFields({ settings: z.record(z.string(), z.json()).and(z.object({
   agentSystemPrompt: z.string().max(maxSystemPromptLength, { error: () => t`系统提示词不能超过 ${maxSystemPromptLength} 个字符` }).optional(),
   agentNodeTools: nodeToolPermissionsSchema.optional(),
+  developCc: z.object({ apiKey: z.string().max(8192) }).optional(),
+  mediaProviderConfigs: z.record(z.string(), z.json()).and(z.object({
+    developCc: z.object({ models: u.mediaProvider.mediaModelsSchema.optional() }).catchall(z.json()).optional(),
+  })).optional(),
   customProviders: z.array(providerSchema.extend({
     id: z.string().min(1).refine(value => value.toLowerCase() !== "toonflow", "toonflow 为账号供应商保留 ID"), label: z.string(),
-  })).optional(),
+  }).refine(provider => provider.id !== "developCc" || (provider.apiUrl === developCcApiUrl && provider.protocol === developCcProtocol),
+    "develop.cc 必须使用固定 API 地址与 OpenAI Completions 协议")).optional(),
   toonflowProvider: accountProviderSchema.nullable().optional(),
   network: u.network.networkSchema.optional(),
   desktopAutoUpdate: z.boolean().optional(),
@@ -41,6 +47,8 @@ export default router.put("/", validateFields({ settings: z.record(z.string(), z
       ? await u.network.prepareNetwork(settings.network) : undefined;
     if (network) u.network.configureNetwork(network, undefined, () => u.conf.set("settings", settings));
     else u.conf.set("settings", settings);
+    if (JSON.stringify(previousSettings.developCc) !== JSON.stringify(settings.developCc)
+      || JSON.stringify(previousSettings.mediaProviderConfigs) !== JSON.stringify(settings.mediaProviderConfigs)) u.mediaBilling.invalidateProviderCaches();
     await u.mcpRuntime.reloadMcpRuntime();
     return { customProviders: settings.customProviders ?? [], mediaProviderConfigs: settings.mediaProviderConfigs ?? {}, toonflowProvider: settings.toonflowProvider ?? null,
       aiModels: u.ai.listAiModels(), nodeMenu: u.conf.get("settings.general.nodeMenu") ?? null };

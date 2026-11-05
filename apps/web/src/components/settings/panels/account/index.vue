@@ -2,7 +2,7 @@
   <div class="accountPanel">
     <div v-if="account" class="overview" :aria-busy="overviewLoading">
       <section class="profileCard" aria-label="当前账户">
-        <div class="profileIcon"><img :src="logoUrl" alt="Toonflow" /></div>
+        <div class="profileIcon"><img :src="logoUrl" alt="xiaobo" /></div>
         <div class="profileInfo">
           <h3>{{ account.nickname || "Toonflow 账号" }}</h3>
           <p v-if="account.contact">{{ account.contact }}</p>
@@ -95,9 +95,9 @@
     <section v-else class="authSection" aria-label="登录与注册">
       <div class="authContent">
         <header class="authHeader">
-          <div class="authLogo"><img :src="logoUrl" alt="Toonflow" /></div>
+          <div class="authLogo"><img :src="logoUrl" alt="xiaobo" /></div>
           <div class="authInfo">
-            <h3>Toonflow</h3>
+            <h3>xiaobo</h3>
             <p>登录后直接使用 Toonflow</p>
           </div>
           <el-segmented v-model="authTab" class="authTabs" :options="authOptions" :disabled="submitting" block aria-label="登录或注册" />
