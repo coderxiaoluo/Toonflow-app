@@ -1,6 +1,6 @@
 <template>
   <div class="home" :class="{ sidebarCollapsed }" :inert="creating || opening || workspaceStore.projectLoadingVisible">
-    <bg v-show="!onlineImageVisible" class="pageBackground" preset="swell" color="#10b981" glintColor="#ffffff" backgroundColor="transparent" :slatWidth="3" :slatHeight="12" :gap="4" :roundness="0.55" :scale="1.7" :speed="0.3" :stretch="0.4" :glint="0.55" :contrast="1.15" :perspective="0.45" :fog="0.35" :cursorStrength="0.5" :cursorSize="80" :trail="0.8" :lean="0.12" />
+    <bg v-show="!onlineImageVisible" class="pageBackground" />
     <homeAdvertisementCarousel class="topPromotion" :advertisements="advertisements.banners" placement="banner" :mode="advertisements.bannerMode" :interval="advertisements.bannerInterval" @activate="activateAdvertisement" />
     <aside id="homeSidebar" class="homeSidebar" aria-label="首页侧栏">
       <div class="sidebarHeader">
@@ -590,14 +590,7 @@ async function createProject(fromPrompt = true) {
     grid-row: 2;
     min-width: 0;
     min-height: 0;
-    background: #e7efeb;
-    opacity: 0.32;
-
-    :global(.dark) & { background: #120f17; }
-
-    mask-image: radial-gradient(ellipse 88% 85% at 100% 100%, #000 0%, rgb(0 0 0 / 85%) 30%, rgb(0 0 0 / 35%) 58%, transparent 85%);
-
-    @media (max-width: 560px) { opacity: 0.24; }
+    mask-image: radial-gradient(ellipse at center, #000 25%, rgb(0 0 0 / 65%) 100%);
   }
 
   &.sidebarCollapsed {
