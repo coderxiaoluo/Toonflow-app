@@ -19,7 +19,14 @@ import {
 } from "./cloudflaredAsset";
 
 const maxVideoSize = 100 * 1024 * 1024;
+// ACT: 公网隧道启动与自检各等待 120 秒，慢网络下过短会误判失败；每 10 秒上报一次等待进度。
+const publicWaitMs = 120000;
+const requestTimeoutMs = 10000;
 const installations = new Map<string, { controller: AbortController; promise: Promise<string>; users: number }>();
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
 
 async function installCloudflared(directory: string, signal: AbortSignal) {
   const asset = currentCloudflaredAsset();
@@ -139,54 +146,71 @@ function videoMime(header: Buffer) {
   throw new Error("无法识别本地视频格式，仅支持 MP4、MOV、WebM、MKV、AVI");
 }
 
-async function waitForPublicVideo(url: string, size: number, samples: { start: number; bytes: Buffer }[], signal: AbortSignal) {
-  const readinessSignal = AbortSignal.any([signal, AbortSignal.timeout(60000)]);
+async function waitForPublicVideo(
+  url: string, size: number, samples: { start: number; bytes: Buffer }[], signal: AbortSignal, report?: (message: string) => void,
+) {
+  const readinessSignal = AbortSignal.any([signal, AbortSignal.timeout(publicWaitMs)]);
+  const startedAt = Date.now();
   let lastError: unknown;
-  while (!readinessSignal.aborted) {
-    try {
-      const requestSignal = AbortSignal.any([readinessSignal, AbortSignal.timeout(10000)]);
-      const head = await fetch(url, { method: "HEAD", redirect: "error", signal: requestSignal });
-      if (head.status !== 200 || head.headers.get("content-type")?.split(";")[0].trim() !== "video/mp4"
-        || head.headers.get("content-length") !== String(size)) throw new Error("公网视频响应类型或长度不正确");
-      for (const sample of samples) {
-        const end = sample.start + sample.bytes.length - 1;
-        const response = await fetch(url, {
-          headers: { Range: `bytes=${sample.start}-${end}`, "Accept-Encoding": "identity" },
-          redirect: "error", signal: requestSignal,
-        });
-        try {
-          if (response.status !== 206 || response.headers.get("content-range") !== `bytes ${sample.start}-${end}/${size}`
-            || response.headers.get("content-type")?.split(";")[0].trim() !== "video/mp4"
-            || response.headers.get("content-length") !== String(sample.bytes.length) || !response.body) {
-            throw new Error("公网视频不支持正确的分段下载");
-          }
-          const reader = response.body.getReader();
+  const progress = setInterval(() => {
+    const waited = Math.round((Date.now() - startedAt) / 1000);
+    report?.(`公网自检等待中：已等待 ${waited} 秒${lastError ? `，最近错误：${errorMessage(lastError)}` : "，尚未完成首次请求"}`);
+  }, 10000);
+  try {
+    while (!readinessSignal.aborted) {
+      try {
+        // 每个请求单独计时，避免前一个慢请求耗尽后续 HEAD/Range 的 10 秒预算。
+        const headSignal = AbortSignal.any([readinessSignal, AbortSignal.timeout(requestTimeoutMs)]);
+        const head = await fetch(url, { method: "HEAD", redirect: "error", signal: headSignal });
+        if (head.status !== 200 || head.headers.get("content-type")?.split(";")[0].trim() !== "video/mp4"
+          || head.headers.get("content-length") !== String(size)) throw new Error("公网视频响应类型或长度不正确");
+        for (const sample of samples) {
+          const end = sample.start + sample.bytes.length - 1;
+          const rangeSignal = AbortSignal.any([readinessSignal, AbortSignal.timeout(requestTimeoutMs)]);
+          const response = await fetch(url, {
+            headers: { Range: `bytes=${sample.start}-${end}`, "Accept-Encoding": "identity" },
+            redirect: "error", signal: rangeSignal,
+          });
           try {
-            let offset = 0;
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (offset + value.length > sample.bytes.length
-                || !sample.bytes.subarray(offset, offset + value.length).equals(value)) throw new Error("公网视频内容与本地文件不一致");
-              offset += value.length;
+            if (response.status !== 206 || response.headers.get("content-range") !== `bytes ${sample.start}-${end}/${size}`
+              || response.headers.get("content-type")?.split(";")[0].trim() !== "video/mp4"
+              || response.headers.get("content-length") !== String(sample.bytes.length) || !response.body) {
+              throw new Error("公网视频不支持正确的分段下载");
             }
-            if (offset !== sample.bytes.length) throw new Error("公网视频分段下载不完整");
-          } finally {
-            await reader.cancel().catch(() => {});
-            reader.releaseLock();
-          }
-        } finally { await response.body?.cancel().catch(() => {}); }
+            const reader = response.body.getReader();
+            try {
+              let offset = 0;
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (offset + value.length > sample.bytes.length
+                  || !sample.bytes.subarray(offset, offset + value.length).equals(value)) throw new Error("公网视频内容与本地文件不一致");
+                offset += value.length;
+              }
+              if (offset !== sample.bytes.length) throw new Error("公网视频分段下载不完整");
+            } finally {
+              await reader.cancel().catch(() => {});
+              reader.releaseLock();
+            }
+          } finally { await response.body?.cancel().catch(() => {}); }
+        }
+        readinessSignal.throwIfAborted();
+        return;
+      } catch (error) {
+        lastError = error;
+        if (readinessSignal.aborted) break;
+        await timers.setTimeout(2000, undefined, { signal: readinessSignal }).catch(() => {});
       }
-      readinessSignal.throwIfAborted();
-      return;
-    } catch (error) {
-      lastError = error;
-      if (readinessSignal.aborted) break;
-      await timers.setTimeout(2000, undefined, { signal: readinessSignal }).catch(() => {});
     }
+    signal.throwIfAborted();
+    throw new Error(
+      `公网连接／校验失败：参考视频临时公网链接在 ${publicWaitMs / 1000} 秒内未能通过 MP4 头尾分段读取校验，已停止提交生成`
+      + `${lastError ? `（最近错误：${errorMessage(lastError)}）` : ""}。请检查网络或使用稳定的公网 MP4 直链。`,
+      { cause: lastError },
+    );
+  } finally {
+    clearInterval(progress);
   }
-  signal.throwIfAborted();
-  throw new Error("参考视频临时公网链接在 60 秒内未能通过 MP4 头尾分段读取校验，已停止提交生成。请检查网络或使用稳定的公网 MP4 直链。", { cause: lastError });
 }
 
 export function createMediaVideoTunnel(dataDirectory: string) {
@@ -307,15 +331,24 @@ export function createMediaVideoTunnel(dataDirectory: string) {
       });
       controller.signal.throwIfAborted();
       const port = (server.address() as import("node:net").AddressInfo).port;
+      report?.("正在启动 Cloudflare 公网隧道");
       child = spawn(executable, ["tunnel", "--no-autoupdate", "--url", `http://127.0.0.1:${port}`], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       const tunnelProcess = child;
       tunnelProcess.on("error", onAbort);
       tunnelProcess.once("exit", onAbort);
+      const startupStartedAt = Date.now();
+      const startupProgress = setInterval(() => {
+        report?.(`Cloudflare 公网隧道启动中：已等待 ${Math.round((Date.now() - startupStartedAt) / 1000)} 秒，尚无公网地址`);
+      }, 10000);
       const address = await new Promise<string>((ok, fail) => {
         let output = "";
-        const timer = setTimeout(() => finish(new Error("Cloudflare Quick Tunnel 启动超时")), 60000);
+        const timer = setTimeout(
+          () => finish(new Error(`公网隧道启动失败：Cloudflare Quick Tunnel 在 ${publicWaitMs / 1000} 秒内未输出公网地址`)),
+          publicWaitMs,
+        );
         const finish = (error?: Error, url?: string) => {
           clearTimeout(timer);
+          clearInterval(startupProgress);
           tunnelProcess.stdout?.off("data", inspect);
           tunnelProcess.stderr?.off("data", inspect);
           tunnelProcess.off("error", onError);
@@ -328,8 +361,8 @@ export function createMediaVideoTunnel(dataDirectory: string) {
           const url = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com(?=[\s/]|$)/i)?.[0];
           if (url) finish(undefined, url);
         };
-        const onError = (error: Error) => finish(error);
-        const onExit = () => finish(new Error("cloudflared 提前退出"));
+        const onError = (error: Error) => finish(new Error(`公网隧道启动失败：${errorMessage(error)}`));
+        const onExit = () => finish(new Error("公网隧道启动失败：cloudflared 提前退出"));
         const onStop = () => finish(new Error("视频隧道已取消或停止"));
         tunnelProcess.stdout?.on("data", inspect);
         tunnelProcess.stderr?.on("data", inspect);
@@ -351,7 +384,8 @@ export function createMediaVideoTunnel(dataDirectory: string) {
         if (read.bytesRead !== bytes.length) throw new Error("参考视频在公网校验前发生变化");
         samples.push({ start, bytes });
       }
-      await waitForPublicVideo(url, info.size, samples, controller.signal);
+      report?.(`公网自检开始：MP4 ${info.size} 字节，校验 HEAD 与头尾 Range 分段读取`);
+      await waitForPublicVideo(url, info.size, samples, controller.signal, report);
       publicReady = true;
       report?.(`公网自检通过：MP4 ${info.size} 字节，HEAD 和头尾 Range 内容一致；等待非自检远端读取`);
       return { url, stop };
