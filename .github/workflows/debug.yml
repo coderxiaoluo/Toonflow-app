@@ -182,6 +182,12 @@ jobs:
           }
           if (!(Test-Path -LiteralPath $nsisPath)) { throw '找不到 makensis.exe' }
           "NSIS_PATH=$nsisPath" >> $env:GITHUB_ENV
+      - name: 准备 FFmpeg
+        if: matrix.target == 'windowsX64'
+        shell: pwsh
+        run: |
+          winget install --id Gyan.FFmpeg --exact --silent --accept-source-agreements --accept-package-agreements
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg 安装失败' }
       - name: 构建 Windows 安装包及更新文件
         if: matrix.target == 'windowsX64'
         # ACT: 使用原生环境，避免 Git Bash 的 GNU tar 将 Windows 盘符识别为远程主机。
