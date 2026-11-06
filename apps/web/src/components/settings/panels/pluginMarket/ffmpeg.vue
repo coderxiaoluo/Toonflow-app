@@ -78,7 +78,7 @@
           <div v-for="name in toolNames" :key="name" class="toolInfo">
             <strong>{{ name }}</strong>
             <el-tag :type="status.tools[name].version ? 'success' : 'info'"  effect="plain">
-              {{ status.tools[name].version ? (status.tools[name].origin === 'download' ? '下载版' : '系统安装版') : '不可用' }}
+              {{ status.tools[name].version ? (status.tools[name].origin === 'download' ? '下载版' : status.tools[name].origin === 'bundled' ? '内置版' : '系统安装版') : '不可用' }}
             </el-tag>
             <p v-if="status.tools[name].version" class="description">{{ status.tools[name].version }}</p>
             <code v-if="status.tools[name].path" class="toolPath">{{ status.tools[name].path }}</code>
@@ -101,7 +101,7 @@ import { saveSettings, settings } from "@/stores/settings";
 
 type FfmpegConfig = { mode: "auto" | "download" | "system"; source: string };
 type DownloadState = { phase: "idle" | "downloading" | "verifying" | "installing" | "completed" | "error" | "cancelled"; file?: string; received: number; total?: number; error?: string };
-type ToolStatus = { path: string | null; version: string | null; error: string | null; origin: "download" | "system" | null };
+type ToolStatus = { path: string | null; version: string | null; error: string | null; origin: "download" | "bundled" | "system" | null };
 type FfmpegStatus = {
   platform: string; arch: string; target: string; supported: boolean; directory: string; version: string;
   sources: { id: FfmpegConfig["source"]; label: string; description: string; available: boolean; homepage: string }[];
@@ -112,7 +112,7 @@ const props = withDefaults(defineProps<{ visible?: boolean; downloadOnOpen?: boo
 const headers = { "x-toonflow-workspace": "1" };
 const toolNames = ["ffmpeg", "ffprobe"] as const;
 const modeDescriptions = {
-  get auto() { return translate("优先使用已下载的版本；未下载时，从当前 Toonflow 服务的系统 PATH 查找。"); },
+  get auto() { return translate("优先使用已下载的版本，其次使用桌面内置版本，最后从当前 Toonflow 服务的系统 PATH 查找。"); },
   download: "仅使用此页面下载的版本。",
   get system() { return translate("仅从当前 Toonflow 服务的系统 PATH 查找 FFmpeg 与 ffprobe。"); },
 };

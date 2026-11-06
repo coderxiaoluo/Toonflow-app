@@ -19,6 +19,7 @@ export default {
       "build/desktop/node_modules": "bun/node_modules",
       "build/desktop/photon": "bun/node_modules/@silvia-odwyer/photon-node",
       ...(process.platform === "win32" ? {
+        "build/desktop/ffmpeg/windows": "ffmpeg",
         "build/desktop/protocol/startupLauncher.exe": "startupLauncher.exe",
         "build/desktop/protocol/protocolLauncher.exe": "protocolLauncher.exe",
         "build/desktop/protocol/saveFileDialog.exe": "saveFileDialog.exe",

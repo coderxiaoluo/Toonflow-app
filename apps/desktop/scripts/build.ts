@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import copyDocumentPackages from "../../server/scripts/copyDocumentPackages";
 import copySandboxPackages from "../../server/scripts/copySandboxPackages";
 import prepareCloudflared from "./prepareCloudflared";
+import prepareFfmpeg from "./prepareFfmpeg";
 import prepareMacDmg from "./macDmg";
 import signWindows from "./signWindows";
 import desktopConfig from "../../../electrobun.config";
@@ -32,6 +33,7 @@ if (isMac) {
     }
   }
 }
+if (process.platform === "win32") await prepareFfmpeg(projectDir);
 const ffmpegBuild = await Bun.build({
   entrypoints: [resolve(projectDir, "packages/ffmpeg/src/ffmpegWorker.ts")],
   outdir: resolve(projectDir, "build/desktop/ffmpeg"),

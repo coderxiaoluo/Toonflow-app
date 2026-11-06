@@ -107,6 +107,9 @@ async function start() {
         ] },
       ]);
     }
+    if (process.platform === "win32") {
+      process.env.TOONFLOW_FFMPEG_BUNDLED_DIR = resolve(PATHS.RESOURCES_FOLDER, "app/ffmpeg");
+    }
     setRuntimeHost("desktop");
     const { createApp } = await import("@toonflow/server/app");
     const { closeBrowsers } = await import("@toonflow/server/browser");

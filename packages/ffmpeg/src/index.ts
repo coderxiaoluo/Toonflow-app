@@ -40,8 +40,11 @@ export async function getToolStatus(directory: string, mode: FfmpegMode, formatE
   const entries = await Promise.all(toolNames.map(async (name) => {
     const downloaded = join(directory, executableName(name));
     const hasDownload = mode !== "system" && await file(downloaded).exists();
-    const path = hasDownload ? downloaded : mode === "download" ? null : Bun.which(executableName(name));
-    const origin = path ? hasDownload ? "download" as const : "system" as const : null;
+    const bundled = mode === "auto" && process.platform === "win32" && process.env.TOONFLOW_FFMPEG_BUNDLED_DIR
+      ? join(process.env.TOONFLOW_FFMPEG_BUNDLED_DIR, executableName(name)) : null;
+    const hasBundle = !hasDownload && bundled !== null && await file(bundled).exists();
+    const path = hasDownload ? downloaded : hasBundle ? bundled : mode === "download" ? null : Bun.which(executableName(name));
+    const origin = path ? hasDownload ? "download" as const : hasBundle ? "bundled" as const : "system" as const : null;
     try {
       return [name, { path, origin, version: path ? await readVersionInWorker(path, name) : null, error: path ? null : "未找到可用程序" }] as const;
     } catch (error) {
