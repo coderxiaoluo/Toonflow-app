@@ -208,11 +208,15 @@ jobs:
           notarizationKeyBase64: ${{ secrets.MACOS_NOTARIZATION_KEY_BASE64 }}
         run: |
           set +x
-          : "${certificateBase64:?请配置 MACOS_CERTIFICATE_BASE64 Secret}"
-          : "${certificatePassword:?请配置 MACOS_CERTIFICATE_PASSWORD Secret}"
-          : "${notarizationKeyId:?请配置 MACOS_NOTARIZATION_KEY_ID Secret}"
-          : "${notarizationIssuerId:?请配置 MACOS_NOTARIZATION_ISSUER_ID Secret}"
-          : "${notarizationKeyBase64:?请配置 MACOS_NOTARIZATION_KEY_BASE64 Secret}"
+          # ACT: fork 可能没有 Apple Developer Secrets；缺任一凭据时打未签名测试包，不因 :? 硬失败。
+          if [[ -z "$certificateBase64" || -z "$certificatePassword" || -z "$notarizationKeyId" || -z "$notarizationIssuerId" || -z "$notarizationKeyBase64" ]]; then
+            echo '::notice::未配置完整 Apple 签名/公证 Secrets，将打未签名 macOS 测试包'
+            printf 'macCodesign=0\n' >> "$GITHUB_ENV"
+            printf 'enabled=0\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf 'macCodesign=1\n' >> "$GITHUB_ENV"
+          printf 'enabled=1\n' >> "$GITHUB_OUTPUT"
           umask 077
           certificatePath="$RUNNER_TEMP/toonflowSigning.p12"
           keychainPath="$RUNNER_TEMP/toonflowSigning.keychain-db"
@@ -250,7 +254,7 @@ jobs:
           printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
           printf 'notarizationKeyPath=%s\n' "$notarizationKeyPath" >> "$GITHUB_OUTPUT"
       - name: 为 Apple 公证票据网络错误启用有限重试
-        if: matrix.target == 'macArm64'
+        if: matrix.target == 'macArm64' && steps.signing.outputs.enabled == '1'
         run: |
           bun -e '
           import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "@toonflow/file";
@@ -263,16 +267,16 @@ jobs:
           chmodSync(target, 0o755);
           writeFileSync(process.env.GITHUB_PATH, `${directory}\n`, { flag: "a" });
           '
-      - name: 构建 macOS 安装包及更新文件（ARM 自动公证）
+      - name: 构建 macOS 安装包及更新文件
         if: runner.os == 'macOS'
         env:
           ELECTROBUN_DEVELOPER_ID: ${{ steps.signing.outputs.identity }}
-          ELECTROBUN_APPLEAPIKEY: ${{ matrix.target == 'macArm64' && secrets.MACOS_NOTARIZATION_KEY_ID || '' }}
-          ELECTROBUN_APPLEAPIISSUER: ${{ matrix.target == 'macArm64' && secrets.MACOS_NOTARIZATION_ISSUER_ID || '' }}
+          ELECTROBUN_APPLEAPIKEY: ${{ steps.signing.outputs.enabled == '1' && secrets.MACOS_NOTARIZATION_KEY_ID || '' }}
+          ELECTROBUN_APPLEAPIISSUER: ${{ steps.signing.outputs.enabled == '1' && secrets.MACOS_NOTARIZATION_ISSUER_ID || '' }}
           ELECTROBUN_APPLEAPIKEYPATH: ${{ steps.signing.outputs.notarizationKeyPath }}
         run: bun run release:desktop "$appVersion" "$releaseMode"
       - name: 清理 ARM 签名与公证凭据
-        if: always() && matrix.target == 'macArm64'
+        if: always() && matrix.target == 'macArm64' && steps.signing.outputs.enabled == '1'
         run: |
           rm -f "$RUNNER_TEMP/toonflowSigning.p12" "$RUNNER_TEMP/toonflowNotarization.p8"
           keychainPath="$RUNNER_TEMP/toonflowSigning.keychain-db"

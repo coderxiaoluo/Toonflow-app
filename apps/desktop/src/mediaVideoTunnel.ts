@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
@@ -6,122 +6,50 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import * as timers from "node:timers/promises";
-import { gunzipSync } from "node:zlib";
 import { lstat, mkdir, open, readFile, realpath, stat, writeAtomic } from "@toonflow/file";
+import { PATHS } from "electrobun/main";
+import {
+  cloudflaredExecutableName,
+  cloudflaredMaxDownloadSize,
+  cloudflaredRelease,
+  cloudflaredSha256,
+  currentCloudflaredAsset,
+  downloadCloudflaredAsset,
+  extractCloudflaredExecutable,
+} from "./cloudflaredAsset";
 
-const release = "2026.10.7";
-// 官方 release assets 的 SHA-256 digest（tgz 校验压缩包，而非正文中不同的 checksum）。
-// https://api.github.com/repos/cloudflare/cloudflared/releases/tags/2026.10.7
-const platformAssets = {
-  win32: { name: "cloudflared-windows-amd64.exe", hash: "2493dbc168923bb3e59e5e7716f71deced92992eea9acd6e9d74f84ac7751343" },
-  darwinArm64: { name: "cloudflared-darwin-arm64.tgz", hash: "3586ccf397e98e5f437e60e7c307ca6ac463e110580503af8bb8e6f9ebf831bd" },
-  darwinAmd64: { name: "cloudflared-darwin-amd64.tgz", hash: "02f3edfd87684dd5b705607688e4eb4b323f6e777b81e7b3a85af556aa356848" },
-};
-const maxDownloadSize = 80 * 1024 * 1024;
 const maxVideoSize = 100 * 1024 * 1024;
 const installations = new Map<string, { controller: AbortController; promise: Promise<string>; users: number }>();
 
-function sha256(content: Uint8Array) {
-  return createHash("sha256").update(content).digest("hex");
-}
-
-async function downloadAsset(name: string, signal: AbortSignal) {
-  let url = new URL(`https://github.com/cloudflare/cloudflared/releases/download/${release}/${name}`);
-  for (let redirects = 0; redirects <= 5; redirects++) {
-    if (url.protocol !== "https:" || url.username || url.password || url.port
-      || !["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"].includes(url.hostname)) {
-      throw new Error("cloudflared 下载重定向不属于官方 GitHub HTTPS 地址");
-    }
-    const response = await fetch(url, { redirect: "manual", signal, headers: { "User-Agent": "Toonflow" } });
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      await response.body?.cancel();
-      const location = response.headers.get("location");
-      if (!location) throw new Error("cloudflared 下载重定向缺少地址");
-      url = new URL(location, url);
-      continue;
-    }
-    const declared = response.headers.get("content-length");
-    if (!response.ok || !response.body || (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maxDownloadSize))) {
-      await response.body?.cancel();
-      throw new Error(`下载 cloudflared 失败或文件过大（HTTP ${response.status}）`);
-    }
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    try {
-      while (true) {
-        signal.throwIfAborted();
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > maxDownloadSize) throw new Error("cloudflared 下载超过 80 MB 上限");
-        chunks.push(value);
-      }
-      return Buffer.concat(chunks, size);
-    } finally {
-      await reader.cancel().catch(() => {});
-      reader.releaseLock();
-    }
-  }
-  throw new Error("cloudflared 下载重定向次数过多");
-}
-
-function extractExecutable(archive: Buffer) {
-  // ACT: 固定官方 tgz，仅在内存中读取 cloudflared 普通文件，不将归档路径写入磁盘。
-  const tar = gunzipSync(archive, { maxOutputLength: 128 * 1024 * 1024 });
-  let executable: Buffer | undefined;
-  for (let offset = 0; offset + 512 <= tar.length;) {
-    const header = tar.subarray(offset, offset + 512);
-    if (header.every(byte => byte === 0)) break;
-    const name = header.subarray(0, 100).toString().split("\0")[0];
-    const sizeField = header.subarray(124, 136).toString().replace(/\0.*$/, "").trim();
-    if (!/^[0-7]+$/.test(sizeField)) throw new Error("cloudflared 归档长度无效");
-    const size = parseInt(sizeField, 8);
-    const start = offset + 512;
-    if (!Number.isSafeInteger(size) || start + size > tar.length) throw new Error("cloudflared 归档不完整");
-    if (name === "cloudflared" || name === "./cloudflared") {
-      if (executable || ![0, 48].includes(header[156]!) || header.subarray(345, 500).some(byte => byte !== 0)) {
-        throw new Error("cloudflared 归档不是唯一的普通可执行文件");
-      }
-      executable = tar.subarray(start, start + size);
-    }
-    offset = start + Math.ceil(size / 512) * 512;
-  }
-  if (!executable?.length || executable.length > maxDownloadSize) throw new Error("cloudflared 归档缺少可执行文件");
-  return executable;
-}
-
 async function installCloudflared(directory: string, signal: AbortSignal) {
-  const asset = process.platform === "win32" && process.arch === "x64" ? platformAssets.win32
-    : process.platform === "darwin" && process.arch === "arm64" ? platformAssets.darwinArm64
-    : process.platform === "darwin" && process.arch === "x64" ? platformAssets.darwinAmd64 : undefined;
+  const asset = currentCloudflaredAsset();
   if (!asset) throw new Error("本机视频隧道仅支持 Windows x64、macOS x64/arm64");
-  const folder = join(directory, "cloudflared", release, `${process.platform}-${process.arch}`);
+  const folder = join(directory, "cloudflared", cloudflaredRelease, `${process.platform}-${process.arch}`);
   await mkdir(folder, { recursive: true });
   signal.throwIfAborted();
   const archivePath = join(folder, "download");
   let archive: Buffer | undefined;
   try {
     const info = await lstat(archivePath);
-    if (info.isFile() && info.size > 0 && info.size <= maxDownloadSize) archive = await readFile(archivePath, { signal });
+    if (info.isFile() && info.size > 0 && info.size <= cloudflaredMaxDownloadSize) archive = await readFile(archivePath, { signal });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  if (!archive || sha256(archive) !== asset.hash) {
-    archive = await downloadAsset(asset.name, signal);
-    if (sha256(archive) !== asset.hash) throw new Error("cloudflared SHA-256 校验失败");
+  if (!archive || cloudflaredSha256(archive) !== asset.hash) {
+    archive = await downloadCloudflaredAsset(asset.name, signal);
+    if (cloudflaredSha256(archive) !== asset.hash) throw new Error("cloudflared SHA-256 校验失败");
     signal.throwIfAborted();
     await writeAtomic(archivePath, archive);
   }
   signal.throwIfAborted();
-  const executable = process.platform === "win32" ? archive : extractExecutable(archive);
-  const target = join(folder, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
+  const executable = process.platform === "win32" ? archive : extractCloudflaredExecutable(archive);
+  const target = join(folder, cloudflaredExecutableName());
   // 每次使用都校验缓存，不执行 PATH 中版本和来源未知的程序。
   let valid = false;
   try {
     const info = await lstat(target);
     valid = info.isFile() && info.size === executable.length && (process.platform === "win32" || (info.mode & 0o111) !== 0)
-      && sha256(await readFile(target, { signal })) === sha256(executable);
+      && cloudflaredSha256(await readFile(target, { signal })) === cloudflaredSha256(executable);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -131,8 +59,27 @@ async function installCloudflared(directory: string, signal: AbortSignal) {
   return target;
 }
 
+async function bundledCloudflaredPath(signal: AbortSignal) {
+  const asset = currentCloudflaredAsset();
+  if (!asset) return undefined;
+  const path = join(PATHS.RESOURCES_FOLDER, "app", cloudflaredExecutableName());
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.size <= 0 || info.size > cloudflaredMaxDownloadSize) return undefined;
+    if (process.platform !== "win32" && (info.mode & 0o111) === 0) return undefined;
+    signal.throwIfAborted();
+    if (cloudflaredSha256(await readFile(path, { signal })) !== asset.executableHash) return undefined;
+    return path;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 async function cloudflaredPath(directory: string, signal: AbortSignal) {
   signal.throwIfAborted();
+  const bundled = await bundledCloudflaredPath(signal);
+  if (bundled) return bundled;
   const key = resolve(directory);
   let job = installations.get(key);
   if (!job || job.controller.signal.aborted) {

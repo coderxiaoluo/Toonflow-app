@@ -24,7 +24,10 @@ export default {
         "build/desktop/protocol/saveFileDialog.exe": "saveFileDialog.exe",
         "build/desktop/protocol/updateHelper.exe": "updateHelper.exe",
         "build/desktop/startup/windowsSplashWorker.js": "startup/windowsSplashWorker.js",
-      } : {}),
+        "build/desktop/cloudflared/cloudflared.exe": "cloudflared.exe",
+      } : {
+        "build/desktop/cloudflared/cloudflared": "cloudflared",
+      }),
       "build/web": "views/mainview",
       "build/mcp": "mcp",
       "build/tools": "tools",

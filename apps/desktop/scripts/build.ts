@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, realpathSync, rmSync, writeAtomicSync } 
 import { dirname, resolve } from "node:path";
 import copyDocumentPackages from "../../server/scripts/copyDocumentPackages";
 import copySandboxPackages from "../../server/scripts/copySandboxPackages";
+import prepareCloudflared from "./prepareCloudflared";
 import prepareMacDmg from "./macDmg";
 import signWindows from "./signWindows";
 import desktopConfig from "../../../electrobun.config";
@@ -101,6 +102,8 @@ rmSync(photonOutput, { recursive: true, force: true });
 cpSync(photonDirectory, photonOutput, { recursive: true });
 await copyDocumentPackages(resolve(projectDir, "build/desktop/node_modules"));
 await copySandboxPackages(resolve(projectDir, "build/desktop/node_modules"));
+// ACT: 把 cloudflared 打进资源，避免用户首次视频隧道再从 GitHub 下载超时。
+await prepareCloudflared(projectDir);
 if (isIntelMac) {
   // ACT: 共用插件和 Web 构建；Intel Mac 仅将 SDK 适配交给独立的 1.18.1。
   await $`${process.execPath} ${resolve(projectDir, "compat/macIntel/build.ts")} ${mode === "package" ? "build" : mode}`.cwd(projectDir);

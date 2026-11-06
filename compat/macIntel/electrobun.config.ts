@@ -21,6 +21,7 @@ export default {
       "../../packages/startup/assets/startup.json": "startup/startup.json",
       "../../packages/startup/assets/license.txt": "startup/license.txt",
       "../../packages/startup/assets/macX64": "startup/macX64",
+      "../../build/desktop/cloudflared/cloudflared": "cloudflared",
     },
     buildFolder: "../../build/desktop/macIntel",
     artifactFolder: "../../build/desktop/artifacts/macX64",
