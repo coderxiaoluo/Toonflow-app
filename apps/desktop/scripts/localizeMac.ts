@@ -23,6 +23,9 @@ if (process.env.ELECTROBUN_OS === "macos") {
   if (minimumMacVersion) {
     // ACT: 内层更新包和外层自解压器都执行此钩子，防止旧 SDK 二进制把构建机系统版本带回发布包。
     for (const path of new Bun.Glob("**/*").scanSync({ cwd: bundlePath, absolute: true, onlyFiles: true })) {
+      // ACT: cloudflared 是官方预编译的第三方辅助程序（2026.10.7 要求 macOS 15），不属于 Electrobun SDK；
+      // 跳过它的最低版本校验，否则 Intel 包无法生成。仅公网隧道功能需要 macOS 15+。
+      if (/\/cloudflared$/.test(path)) continue;
       const header = Buffer.from(await file(path).slice(0, 4).arrayBuffer());
       if (header.length < 4 || ![0xfeedface, 0xfeedfacf, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca].includes(header.readUInt32LE())) continue;
       const result = Bun.spawnSync(["otool", "-l", path]);
